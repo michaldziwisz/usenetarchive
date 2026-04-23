@@ -264,10 +264,7 @@ bool HandleEscapeForControl( HWND hwnd )
 
     if( GetDlgCtrlID( hwnd ) == IDC_BODY_EDIT )
     {
-        if( const auto threadList = GetDlgItem( root, IDC_THREAD_LIST ) )
-        {
-            SetFocus( threadList );
-        }
+        SendMessageW( root, WM_COMMAND, MAKEWPARAM( ID_NAV_FOCUS_LIST, 0 ), 0 );
     }
     return true;
 }
@@ -853,7 +850,7 @@ private:
         case IDCANCEL:
             if( focus == m_bodyEdit )
             {
-                SetFocus( m_threadList );
+                FocusPrimaryControl();
             }
             return true;
         case ID_FILE_OPEN_FILE:
