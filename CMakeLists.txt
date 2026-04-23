@@ -230,7 +230,7 @@ if(WIN32)
         winbrowser/ThreadListModel.cpp
         winbrowser/winbrowser.cpp
     )
-    target_link_libraries(winbrowser PRIVATE comctl32 ole32 shell32 libuat common icu zstd)
+    target_link_libraries(winbrowser PRIVATE comctl32 ole32 shell32 uuid libuat common icu zstd)
 endif()
 
 if(NOT BUILD_WINBROWSER_ONLY)
