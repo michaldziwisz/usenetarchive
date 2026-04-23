@@ -781,8 +781,33 @@ private:
             return true;
         }
 
+        const auto focus = GetFocus();
+
         switch( id )
         {
+        case IDOK:
+            if( focus == m_threadList || focus == m_detailsEdit )
+            {
+                SetFocus( m_bodyEdit );
+                return true;
+            }
+            if( focus == m_resultsList )
+            {
+                ActivateSelectedSearchResult();
+                return true;
+            }
+            if( focus == m_searchEdit || focus == m_searchButton )
+            {
+                ExecuteSearch();
+                return true;
+            }
+            break;
+        case IDCANCEL:
+            if( focus == m_bodyEdit )
+            {
+                SetFocus( m_threadList );
+            }
+            return true;
         case ID_FILE_OPEN_FILE:
             OpenPathDialog( false );
             return true;
