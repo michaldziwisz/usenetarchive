@@ -270,6 +270,24 @@ LRESULT CALLBACK ReadOnlyPaneSubclassProc( HWND hwnd, UINT msg, WPARAM wParam, L
     return DefSubclassProc( hwnd, msg, wParam, lParam );
 }
 
+LRESULT CALLBACK ForwardPanelMessagesSubclassProc( HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam, UINT_PTR, DWORD_PTR )
+{
+    switch( msg )
+    {
+    case WM_COMMAND:
+    case WM_NOTIFY:
+        if( const auto parent = GetParent( hwnd ) )
+        {
+            return SendMessageW( parent, msg, wParam, lParam );
+        }
+        break;
+    default:
+        break;
+    }
+
+    return DefSubclassProc( hwnd, msg, wParam, lParam );
+}
+
 }  // namespace
 
 class WinBrowserWindow
@@ -491,6 +509,8 @@ private:
             m_instance,
             nullptr
         );
+        SetWindowSubclass( m_browsePanel, &ForwardPanelMessagesSubclassProc, 0, 0 );
+        SetWindowSubclass( m_searchPanel, &ForwardPanelMessagesSubclassProc, 0, 0 );
 
         m_threadList = CreateWindowExW(
             WS_EX_CLIENTEDGE,
