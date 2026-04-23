@@ -240,6 +240,16 @@ int GetSingleSelectedRow( HWND list )
     return ListView_GetNextItem( list, -1, LVNI_SELECTED );
 }
 
+int GetCurrentListViewRow( HWND list )
+{
+    auto row = ListView_GetNextItem( list, -1, LVNI_FOCUSED );
+    if( row < 0 )
+    {
+        row = GetSingleSelectedRow( list );
+    }
+    return row;
+}
+
 std::wstring ThreadStateText( const ThreadListRowData& row )
 {
     std::wstring ret = row.visited ? L"read" : L"unread";
@@ -253,6 +263,31 @@ std::wstring ThreadStateText( const ThreadListRowData& row )
         ret += L"leaf";
     }
     return ret;
+}
+
+LRESULT CALLBACK ReadOnlyPaneSubclassProc( HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam, UINT_PTR, DWORD_PTR )
+{
+    switch( msg )
+    {
+    case WM_GETDLGCODE:
+        return DefSubclassProc( hwnd, msg, wParam, lParam ) & ~DLGC_WANTTAB;
+    case WM_KEYDOWN:
+        if( wParam == VK_TAB )
+        {
+            auto root = GetAncestor( hwnd, GA_ROOT );
+            if( root )
+            {
+                const auto previous = ( GetKeyState( VK_SHIFT ) & 0x8000 ) != 0;
+                SendMessageW( root, WM_NEXTDLGCTL, previous ? TRUE : FALSE, FALSE );
+                return 0;
+            }
+        }
+        break;
+    default:
+        break;
+    }
+
+    return DefSubclassProc( hwnd, msg, wParam, lParam );
 }
 
 }  // namespace
@@ -477,7 +512,7 @@ private:
         m_threadList = CreateWindowExW(
             WS_EX_CLIENTEDGE,
             WC_LISTVIEWW,
-            L"",
+            L"Thread list",
             WS_CHILD | WS_VISIBLE | WS_TABSTOP | LVS_REPORT | LVS_SHOWSELALWAYS | LVS_SINGLESEL | LVS_OWNERDATA,
             0,
             0,
@@ -496,7 +531,7 @@ private:
         m_resultsList = CreateWindowExW(
             WS_EX_CLIENTEDGE,
             WC_LISTVIEWW,
-            L"",
+            L"Search results",
             WS_CHILD | WS_VISIBLE | WS_TABSTOP | LVS_REPORT | LVS_SHOWSELALWAYS | LVS_SINGLESEL | LVS_OWNERDATA,
             0,
             0,
@@ -524,6 +559,7 @@ private:
             nullptr
         );
         SendMessageW( m_detailsEdit, EM_SETREADONLY, TRUE, 0 );
+        SetWindowSubclass( m_detailsEdit, &ReadOnlyPaneSubclassProc, 0, 0 );
 
         m_bodyLabel = CreateWindowExW( 0, L"STATIC", L"Message body", WS_CHILD | WS_VISIBLE, 0, 0, 100, 24, m_hwnd, reinterpret_cast<HMENU>( IDC_BODY_LABEL ), m_instance, nullptr );
         m_bodyEdit = CreateWindowExW(
@@ -543,6 +579,7 @@ private:
         SendMessageW( m_bodyEdit, EM_SETREADONLY, TRUE, 0 );
         SendMessageW( m_bodyEdit, EM_AUTOURLDETECT, TRUE, 0 );
         SendMessageW( m_bodyEdit, EM_SETEVENTMASK, 0, ENM_LINK );
+        SetWindowSubclass( m_bodyEdit, &ReadOnlyPaneSubclassProc, 0, 0 );
 
         m_status = CreateWindowExW(
             0,
@@ -588,17 +625,17 @@ private:
         apply( m_threadList );
         apply( m_resultsList );
 
-        AddColumn( m_threadList, 0, L"Level", 60 );
-        AddColumn( m_threadList, 1, L"State", 140 );
-        AddColumn( m_threadList, 2, L"Msgs", 70 );
-        AddColumn( m_threadList, 3, L"Subject", 320 );
-        AddColumn( m_threadList, 4, L"Author", 160 );
-        AddColumn( m_threadList, 5, L"Date", 160 );
+        AddColumn( m_threadList, 0, L"Subject", 420 );
+        AddColumn( m_threadList, 1, L"Author", 180 );
+        AddColumn( m_threadList, 2, L"Date", 160 );
+        AddColumn( m_threadList, 3, L"State", 140 );
+        AddColumn( m_threadList, 4, L"Level", 60 );
+        AddColumn( m_threadList, 5, L"Msgs", 70 );
 
-        AddColumn( m_resultsList, 0, L"Rank", 70 );
-        AddColumn( m_resultsList, 1, L"Subject", 360 );
-        AddColumn( m_resultsList, 2, L"Author", 160 );
-        AddColumn( m_resultsList, 3, L"Date", 160 );
+        AddColumn( m_resultsList, 0, L"Subject", 420 );
+        AddColumn( m_resultsList, 1, L"Author", 180 );
+        AddColumn( m_resultsList, 2, L"Date", 160 );
+        AddColumn( m_resultsList, 3, L"Rank", 70 );
     }
 
     void AddColumn( HWND list, int index, const wchar_t* title, int width )
@@ -781,6 +818,9 @@ private:
             case LVN_ITEMCHANGED:
                 HandleThreadSelectionChanged( reinterpret_cast<const NMLISTVIEW*>( hdr ) );
                 return true;
+            case LVN_ODSTATECHANGED:
+                HandleThreadSelectionRangeChanged( reinterpret_cast<const NMLVODSTATECHANGE*>( hdr ) );
+                return true;
             case LVN_KEYDOWN:
                 return HandleThreadKeyDown( reinterpret_cast<const NMLVKEYDOWN*>( hdr ) );
             case NM_DBLCLK:
@@ -801,6 +841,9 @@ private:
                 return true;
             case LVN_ITEMCHANGED:
                 HandleSearchSelectionChanged( reinterpret_cast<const NMLISTVIEW*>( hdr ) );
+                return true;
+            case LVN_ODSTATECHANGED:
+                HandleSearchSelectionRangeChanged( reinterpret_cast<const NMLVODSTATECHANGE*>( hdr ) );
                 return true;
             case LVN_KEYDOWN:
                 return HandleSearchKeyDown( reinterpret_cast<const NMLVKEYDOWN*>( hdr ) );
@@ -832,22 +875,22 @@ private:
         switch( info->item.iSubItem )
         {
         case 0:
-            text = std::to_wstring( row.depth );
-            break;
-        case 1:
-            text = ThreadStateText( row );
-            break;
-        case 2:
-            text = std::to_wstring( row.subtreeSize );
-            break;
-        case 3:
             text = Utf8ToWide( m_archive->GetSubject( row.messageIndex ) );
             break;
-        case 4:
+        case 1:
             text = Utf8ToWide( m_archive->GetRealName( row.messageIndex ) );
             break;
-        case 5:
+        case 2:
             text = FormatDateTime( m_archive->GetDate( row.messageIndex ) );
+            break;
+        case 3:
+            text = ThreadStateText( row );
+            break;
+        case 4:
+            text = std::to_wstring( row.depth );
+            break;
+        case 5:
+            text = std::to_wstring( row.subtreeSize );
             break;
         default:
             break;
@@ -865,16 +908,16 @@ private:
         switch( info->item.iSubItem )
         {
         case 0:
-            text = std::to_wstring( int( result.rank * 100.f ) ) + L"%";
-            break;
-        case 1:
             text = Utf8ToWide( m_archive->GetSubject( result.postid ) );
             break;
-        case 2:
+        case 1:
             text = Utf8ToWide( m_archive->GetRealName( result.postid ) );
             break;
-        case 3:
+        case 2:
             text = FormatDateTime( m_archive->GetDate( result.postid ) );
+            break;
+        case 3:
+            text = std::to_wstring( int( result.rank * 100.f ) ) + L"%";
             break;
         default:
             break;
@@ -886,21 +929,54 @@ private:
     {
         if( m_ignoreThreadSelection ) return;
         if( ( info->uChanged & LVIF_STATE ) == 0 ) return;
-        if( ( info->uNewState & LVIS_SELECTED ) == 0 ) return;
-        if( info->iItem < 0 ) return;
-
-        const auto message = m_threadModel.MessageAt( info->iItem );
-        DisplayMessage( message, true );
+        if( ( info->uNewState & ( LVIS_SELECTED | LVIS_FOCUSED ) ) == 0 ) return;
+        SyncThreadPreviewToCurrentRow();
     }
 
     void HandleSearchSelectionChanged( const NMLISTVIEW* info )
     {
         if( m_ignoreSearchSelection ) return;
         if( ( info->uChanged & LVIF_STATE ) == 0 ) return;
-        if( ( info->uNewState & LVIS_SELECTED ) == 0 ) return;
-        if( info->iItem < 0 || size_t( info->iItem ) >= m_searchData.results.size() ) return;
+        if( ( info->uNewState & ( LVIS_SELECTED | LVIS_FOCUSED ) ) == 0 ) return;
+        SyncSearchPreviewToCurrentRow();
+    }
 
-        DisplayMessage( m_searchData.results[info->iItem].postid, true );
+    void HandleThreadSelectionRangeChanged( const NMLVODSTATECHANGE* info )
+    {
+        if( m_ignoreThreadSelection ) return;
+        if( ( info->uNewState & ( LVIS_SELECTED | LVIS_FOCUSED ) ) == 0 ) return;
+        SyncThreadPreviewToCurrentRow();
+    }
+
+    void HandleSearchSelectionRangeChanged( const NMLVODSTATECHANGE* info )
+    {
+        if( m_ignoreSearchSelection ) return;
+        if( ( info->uNewState & ( LVIS_SELECTED | LVIS_FOCUSED ) ) == 0 ) return;
+        SyncSearchPreviewToCurrentRow();
+    }
+
+    void SyncThreadPreviewToCurrentRow()
+    {
+        const auto row = GetCurrentListViewRow( m_threadList );
+        if( row < 0 || size_t( row ) >= m_threadModel.VisibleCount() ) return;
+
+        const auto message = m_threadModel.MessageAt( row );
+        if( message != m_selectedMessage )
+        {
+            DisplayMessage( message, true );
+        }
+    }
+
+    void SyncSearchPreviewToCurrentRow()
+    {
+        const auto row = GetCurrentListViewRow( m_resultsList );
+        if( row < 0 || size_t( row ) >= m_searchData.results.size() ) return;
+
+        const auto message = m_searchData.results[row].postid;
+        if( message != m_selectedMessage )
+        {
+            DisplayMessage( message, true );
+        }
     }
 
     bool HandleThreadKeyDown( const NMLVKEYDOWN* info )
