@@ -14,39 +14,52 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Install vcpkg and ICU
-        shell: pwsh
-        run: |
-          git clone --depth 1 https://github.com/microsoft/vcpkg "$env:RUNNER_TEMP\vcpkg"
-          & "$env:RUNNER_TEMP\vcpkg\bootstrap-vcpkg.bat" -disableMetrics
-          & "$env:RUNNER_TEMP\vcpkg\vcpkg.exe" install icu:x64-windows-static-md
+      - name: Set up MSYS2 toolchain
+        uses: msys2/setup-msys2@v2
+        with:
+          msystem: MINGW64
+          update: true
+          install: >-
+            mingw-w64-x86_64-gcc
+            mingw-w64-x86_64-cmake
+            mingw-w64-x86_64-ninja
+            mingw-w64-x86_64-icu
 
       - name: Configure
-        shell: pwsh
+        shell: msys2 {0}
         run: |
-          cmake -S . -B build -G "Visual Studio 17 2022" -A x64 `
-            -DBUILD_WINBROWSER_ONLY=ON `
-            -DCMAKE_TOOLCHAIN_FILE="$env:RUNNER_TEMP\vcpkg\scripts\buildsystems\vcpkg.cmake" `
-            -DVCPKG_TARGET_TRIPLET=x64-windows-static-md
+          cmake -S . -B build -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DBUILD_WINBROWSER_ONLY=ON \
+            -DMARCH_NATIVE=OFF
 
       - name: Build
-        shell: pwsh
+        shell: msys2 {0}
         run: |
-          cmake --build build --config Release --target winbrowser --parallel
+          cmake --build build --target winbrowser --parallel
 
       - name: Prepare artifact
-        shell: pwsh
+        shell: msys2 {0}
         run: |
-          New-Item -ItemType Directory -Force dist | Out-Null
-          Copy-Item "build\Release\winbrowser.exe" "dist\winbrowser.exe"
-          @"
+          mkdir -p dist
+          cp build/winbrowser.exe dist/winbrowser.exe
+
+          for dll in $(objdump -p build/winbrowser.exe | awk '/DLL Name:/ { print $3 }'); do
+            if [ -f "$MINGW_PREFIX/bin/$dll" ]; then
+              cp "$MINGW_PREFIX/bin/$dll" dist/
+            fi
+          done
+
+          cat > dist/README-winbrowser.txt <<'EOF'
           Native Windows GUI build of the Usenet Archive Browser.
 
           Run:
             winbrowser.exe <archive-path>
 
           You can also launch it without arguments and use File -> Open.
-          "@ | Set-Content -Encoding UTF8 "dist\README-winbrowser.txt"
+
+          Keep the DLL files from this archive in the same folder as winbrowser.exe.
+          EOF
 
       - uses: actions/upload-artifact@v4
         with:
