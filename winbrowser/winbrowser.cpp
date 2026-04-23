@@ -636,33 +636,39 @@ private:
         GetWindowRect( m_status, &statusRect );
         const auto statusHeight = statusRect.bottom - statusRect.top;
         client.bottom -= statusHeight;
+        const int clientWidth = int( client.right );
+        const int clientHeight = int( client.bottom );
 
         const int gap = Scale( 8 );
         const int leftMin = Scale( 320 );
         const int rightMin = Scale( 420 );
 
-        int leftWidth = client.right * 42 / 100;
+        int leftWidth = clientWidth * 42 / 100;
         leftWidth = std::max( leftWidth, leftMin );
-        leftWidth = std::min( leftWidth, std::max( leftMin, client.right - rightMin - gap * 2 ) );
+        leftWidth = std::min( leftWidth, std::max( leftMin, clientWidth - rightMin - gap * 2 ) );
         leftWidth = std::max( leftWidth, 0 );
 
-        SetWindowPos( m_tab, nullptr, gap, gap, leftWidth, std::max( 0, client.bottom - gap * 2 ), SWP_NOZORDER );
+        SetWindowPos( m_tab, nullptr, gap, gap, leftWidth, std::max( 0, clientHeight - gap * 2 ), SWP_NOZORDER );
 
         RECT tabRect = {};
         GetWindowRect( m_tab, &tabRect );
         MapWindowPoints( nullptr, m_hwnd, reinterpret_cast<POINT*>( &tabRect ), 2 );
         RECT pageRect = tabRect;
         TabCtrl_AdjustRect( m_tab, FALSE, &pageRect );
+        const int pageWidth = std::max( 0, int( pageRect.right - pageRect.left ) );
+        const int pageHeight = std::max( 0, int( pageRect.bottom - pageRect.top ) );
 
-        SetWindowPos( m_browsePanel, nullptr, pageRect.left, pageRect.top, std::max( 0, pageRect.right - pageRect.left ), std::max( 0, pageRect.bottom - pageRect.top ), SWP_NOZORDER );
-        SetWindowPos( m_searchPanel, nullptr, pageRect.left, pageRect.top, std::max( 0, pageRect.right - pageRect.left ), std::max( 0, pageRect.bottom - pageRect.top ), SWP_NOZORDER );
+        SetWindowPos( m_browsePanel, nullptr, int( pageRect.left ), int( pageRect.top ), pageWidth, pageHeight, SWP_NOZORDER );
+        SetWindowPos( m_searchPanel, nullptr, int( pageRect.left ), int( pageRect.top ), pageWidth, pageHeight, SWP_NOZORDER );
 
         RECT panel = {};
         GetClientRect( m_browsePanel, &panel );
-        SetWindowPos( m_threadList, nullptr, 0, 0, panel.right, panel.bottom, SWP_NOZORDER );
+        SetWindowPos( m_threadList, nullptr, 0, 0, int( panel.right ), int( panel.bottom ), SWP_NOZORDER );
 
         RECT searchPanel = {};
         GetClientRect( m_searchPanel, &searchPanel );
+        const int searchPanelWidth = int( searchPanel.right );
+        const int searchPanelHeight = int( searchPanel.bottom );
         const int labelHeight = Scale( 20 );
         const int inputHeight = Scale( 26 );
         const int hintHeight = Scale( 34 );
@@ -671,13 +677,13 @@ private:
         const int innerGap = Scale( 6 );
 
         SetWindowPos( m_searchLabel, nullptr, 0, 0, labelWidth, labelHeight, SWP_NOZORDER );
-        SetWindowPos( m_searchEdit, nullptr, labelWidth + innerGap, 0, std::max( 100, searchPanel.right - labelWidth - buttonWidth - innerGap * 2 ), inputHeight, SWP_NOZORDER );
-        SetWindowPos( m_searchButton, nullptr, std::max( 0, searchPanel.right - buttonWidth ), 0, buttonWidth, inputHeight, SWP_NOZORDER );
-        SetWindowPos( m_searchHint, nullptr, 0, inputHeight + innerGap, searchPanel.right, hintHeight, SWP_NOZORDER );
-        SetWindowPos( m_resultsList, nullptr, 0, inputHeight + hintHeight + innerGap * 2, searchPanel.right, std::max( 0, searchPanel.bottom - inputHeight - hintHeight - innerGap * 2 ), SWP_NOZORDER );
+        SetWindowPos( m_searchEdit, nullptr, labelWidth + innerGap, 0, std::max( 100, searchPanelWidth - labelWidth - buttonWidth - innerGap * 2 ), inputHeight, SWP_NOZORDER );
+        SetWindowPos( m_searchButton, nullptr, std::max( 0, searchPanelWidth - buttonWidth ), 0, buttonWidth, inputHeight, SWP_NOZORDER );
+        SetWindowPos( m_searchHint, nullptr, 0, inputHeight + innerGap, searchPanelWidth, hintHeight, SWP_NOZORDER );
+        SetWindowPos( m_resultsList, nullptr, 0, inputHeight + hintHeight + innerGap * 2, searchPanelWidth, std::max( 0, searchPanelHeight - inputHeight - hintHeight - innerGap * 2 ), SWP_NOZORDER );
 
         const int rightX = gap + leftWidth + gap;
-        const int rightWidth = std::max( 0, client.right - rightX - gap );
+        const int rightWidth = std::max( 0, clientWidth - rightX - gap );
         const int labelY = gap;
         const int summaryY = labelY + labelHeight;
         const int summaryHeight = Scale( 130 );
@@ -687,7 +693,7 @@ private:
         SetWindowPos( m_detailsLabel, nullptr, rightX, labelY, rightWidth, labelHeight, SWP_NOZORDER );
         SetWindowPos( m_detailsEdit, nullptr, rightX, summaryY, rightWidth, summaryHeight, SWP_NOZORDER );
         SetWindowPos( m_bodyLabel, nullptr, rightX, bodyLabelY, rightWidth, labelHeight, SWP_NOZORDER );
-        SetWindowPos( m_bodyEdit, nullptr, rightX, bodyY, rightWidth, std::max( 0, client.bottom - bodyY - gap ), SWP_NOZORDER );
+        SetWindowPos( m_bodyEdit, nullptr, rightX, bodyY, rightWidth, std::max( 0, clientHeight - bodyY - gap ), SWP_NOZORDER );
     }
 
     int Scale( int value ) const
@@ -1251,7 +1257,13 @@ private:
             return;
         }
 
-        const auto raw = m_archive->GetMessage( m_selectedMessage, m_messageBuffer );
+        const auto raw = ( m_archive->GetMessage )( m_selectedMessage, m_messageBuffer );
+        if( !raw )
+        {
+            ClearDisplayedMessage();
+            UpdateStatusText( L"Selected message could not be loaded." );
+            return;
+        }
         const auto date = FormatDateTime( m_archive->GetDate( m_selectedMessage ) );
         const auto from = std::string( m_archive->GetFrom( m_selectedMessage ) );
         const auto realName = std::string( m_archive->GetRealName( m_selectedMessage ) );
@@ -1348,7 +1360,7 @@ private:
 
     void SetActiveTab( int tab, bool focusPrimary )
     {
-        tab = std::clamp( tab, TabBrowse, TabSearch );
+        tab = std::clamp<int>( tab, TabBrowse, TabSearch );
         m_currentTab = tab;
         TabCtrl_SetCurSel( m_tab, tab );
         UpdateTabVisibility();
