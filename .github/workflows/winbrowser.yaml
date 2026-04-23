@@ -1,0 +1,54 @@
+name: WinBrowser
+
+on:
+  workflow_dispatch:
+  push:
+
+permissions:
+  contents: read
+
+jobs:
+  build-winbrowser:
+    runs-on: windows-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install vcpkg and ICU
+        shell: pwsh
+        run: |
+          git clone --depth 1 https://github.com/microsoft/vcpkg "$env:RUNNER_TEMP\vcpkg"
+          & "$env:RUNNER_TEMP\vcpkg\bootstrap-vcpkg.bat" -disableMetrics
+          & "$env:RUNNER_TEMP\vcpkg\vcpkg.exe" install icu:x64-windows-static-md
+
+      - name: Configure
+        shell: pwsh
+        run: |
+          cmake -S . -B build -G "Visual Studio 17 2022" -A x64 `
+            -DBUILD_WINBROWSER_ONLY=ON `
+            -DCMAKE_TOOLCHAIN_FILE="$env:RUNNER_TEMP\vcpkg\scripts\buildsystems\vcpkg.cmake" `
+            -DVCPKG_TARGET_TRIPLET=x64-windows-static-md
+
+      - name: Build
+        shell: pwsh
+        run: |
+          cmake --build build --config Release --target winbrowser --parallel
+
+      - name: Prepare artifact
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force dist | Out-Null
+          Copy-Item "build\Release\winbrowser.exe" "dist\winbrowser.exe"
+          @"
+          Native Windows GUI build of the Usenet Archive Browser.
+
+          Run:
+            winbrowser.exe <archive-path>
+
+          You can also launch it without arguments and use File -> Open.
+          "@ | Set-Content -Encoding UTF8 "dist\README-winbrowser.txt"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: winbrowser-windows-x64
+          path: dist

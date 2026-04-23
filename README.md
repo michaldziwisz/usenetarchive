@@ -4,16 +4,34 @@ The *Usenet Archive Toolkit* project aims to provide a *set of tools* to process
 
 Typically you will have two usage patterns:
 
-1. There is an *already created* archive file that you want to read. To do so, you *only* need to download or build the tbrowser utility.
+1. There is an *already created* archive file that you want to read. To do so, you *only* need to download or build the tbrowser utility, or `winbrowser` on Windows.
 2. You want to *create* an archive file from the sources available to you. You will need to use most of the provided utilities. Following the workflow graph is a good starting point.
 
-**TL;DR: Download available archive files, use tbrowser to read them.**
+**TL;DR: Download available archive files, use tbrowser or winbrowser to read them.**
 
 ![](doc/tbrowser1.png)
 ![](doc/tbrowser2.png)
 ![](doc/galaxy1.png)
 ![](doc/galaxy2.png)
 ![](doc/tbrowser3.png)
+
+## Windows GUI browser
+
+The repository also contains a native Windows GUI target named `winbrowser`.
+It is built on standard system controls instead of custom drawing, so screen
+readers such as NVDA can move between the thread list, search results, message
+summary, and message body using normal Windows accessibility support.
+
+Current scope:
+
+- Open packaged archive files, unpacked archive directories, and galaxy directories.
+- Browse large archives through a virtualized thread list.
+- Search the archive with the existing `libuat` search engine.
+- Read messages in a normal windowed interface with keyboard shortcuts for focus,
+  expand/collapse, and body navigation.
+
+Build it on Windows with CMake and run `winbrowser <archive-path>`, or launch it
+without arguments and open an archive from the File menu.
 
 ## List of UAT archive files
 
@@ -116,6 +134,7 @@ These tools provide access to archive data:
 ### End-user Utilities
 
 - tbrowser --- Curses-based text mode browser of archives.
+- winbrowser --- Native Windows GUI browser designed around standard controls and screen reader compatibility.
 
 ## Future work ideas
 

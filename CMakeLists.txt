@@ -2,12 +2,17 @@ cmake_minimum_required(VERSION 3.29)
 
 option(TRACY_ENABLE "Enable Tracy" OFF)
 option(MARCH_NATIVE "Enable -march=native" ON)
+option(BUILD_WINBROWSER_ONLY "Build only winbrowser and its required libraries" ${WIN32})
 
 set(CMAKE_CXX_STANDARD 17)
 
 project(UsenetArchive
-    LANGUAGES ASM C CXX
+    LANGUAGES C CXX
 )
+
+if(NOT WIN32)
+    enable_language(ASM)
+endif()
 
 include(CheckCompilerFlag)
 include(FindPkgConfig)
@@ -18,13 +23,15 @@ if(NOT TRACY_ENABLE)
     set(TRACY_OPTIONS "TRACY_STATIC ON")
 endif()
 
-CPMAddPackage(
-    NAME tracy
-    GITHUB_REPOSITORY wolfpld/tracy
-    GIT_TAG master
-    OPTIONS ${TRACY_OPTIONS}
-    EXCLUDE_FROM_ALL TRUE
-)
+if(NOT BUILD_WINBROWSER_ONLY)
+    CPMAddPackage(
+        NAME tracy
+        GITHUB_REPOSITORY wolfpld/tracy
+        GIT_TAG master
+        OPTIONS ${TRACY_OPTIONS}
+        EXCLUDE_FROM_ALL TRUE
+    )
+endif()
 
 if(TRACY_ENABLE)
     add_definitions(-DTRACY_ENABLE)
@@ -38,36 +45,44 @@ if(MARCH_NATIVE)
     endif()
 endif()
 
-
-pkg_check_modules(CURL REQUIRED libcurl)
-add_library(curl INTERFACE)
-target_link_libraries(curl INTERFACE ${CURL_LINK_LIBRARIES})
-target_include_directories(curl INTERFACE ${CURL_INCLUDE_DIRS})
-
-pkg_check_modules(OPENSSL REQUIRED openssl)
-add_library(ssl INTERFACE)
-target_link_libraries(ssl INTERFACE ${OPENSSL_LINK_LIBRARIES})
-target_include_directories(ssl INTERFACE ${OPENSSL_INCLUDE_DIRS})
-
-pkg_check_modules(ICU REQUIRED icu-uc)
 add_library(icu INTERFACE)
-target_link_libraries(icu INTERFACE ${ICU_LINK_LIBRARIES})
-target_include_directories(icu INTERFACE ${ICU_INCLUDE_DIRS})
+if(WIN32)
+    find_package(ICU REQUIRED COMPONENTS uc i18n data)
+    target_link_libraries(icu INTERFACE ICU::uc ICU::i18n ICU::data)
+else()
+    pkg_check_modules(ICU REQUIRED icu-uc)
+    target_link_libraries(icu INTERFACE ${ICU_LINK_LIBRARIES})
+    target_include_directories(icu INTERFACE ${ICU_INCLUDE_DIRS})
+endif()
 
-pkg_check_modules(NCURSES REQUIRED ncursesw)
-add_library(ncurses INTERFACE)
-target_link_libraries(ncurses INTERFACE ${NCURSES_LINK_LIBRARIES})
-target_include_directories(ncurses INTERFACE ${NCURSES_INCLUDE_DIRS})
+if(NOT WIN32)
+    pkg_check_modules(NCURSES REQUIRED ncursesw)
+    add_library(ncurses INTERFACE)
+    target_link_libraries(ncurses INTERFACE ${NCURSES_LINK_LIBRARIES})
+    target_include_directories(ncurses INTERFACE ${NCURSES_INCLUDE_DIRS})
+endif()
 
-pkg_check_modules(GMIME REQUIRED gmime-3.0)
-add_library(gmime INTERFACE)
-target_link_libraries(gmime INTERFACE ${GMIME_LINK_LIBRARIES})
-target_include_directories(gmime INTERFACE ${GMIME_INCLUDE_DIRS})
+if(NOT BUILD_WINBROWSER_ONLY)
+    pkg_check_modules(CURL REQUIRED libcurl)
+    add_library(curl INTERFACE)
+    target_link_libraries(curl INTERFACE ${CURL_LINK_LIBRARIES})
+    target_include_directories(curl INTERFACE ${CURL_INCLUDE_DIRS})
 
-pkg_check_modules(LZ4 REQUIRED liblz4)
-add_library(lz4 INTERFACE)
-target_link_libraries(lz4 INTERFACE ${LZ4_LINK_LIBRARIES})
-target_include_directories(lz4 INTERFACE ${LZ4_INCLUDE_DIRS})
+    pkg_check_modules(OPENSSL REQUIRED openssl)
+    add_library(ssl INTERFACE)
+    target_link_libraries(ssl INTERFACE ${OPENSSL_LINK_LIBRARIES})
+    target_include_directories(ssl INTERFACE ${OPENSSL_INCLUDE_DIRS})
+
+    pkg_check_modules(GMIME REQUIRED gmime-3.0)
+    add_library(gmime INTERFACE)
+    target_link_libraries(gmime INTERFACE ${GMIME_LINK_LIBRARIES})
+    target_include_directories(gmime INTERFACE ${GMIME_INCLUDE_DIRS})
+
+    pkg_check_modules(LZ4 REQUIRED liblz4)
+    add_library(lz4 INTERFACE)
+    target_link_libraries(lz4 INTERFACE ${LZ4_LINK_LIBRARIES})
+    target_include_directories(lz4 INTERFACE ${LZ4_INCLUDE_DIRS})
+endif()
 
 
 set(COMMON_SRC
@@ -117,7 +132,6 @@ set(ZSTD_SRC
     contrib/zstd/compress/zstd_opt.c
     contrib/zstd/compress/zstdmt_compress.c
     contrib/zstd/decompress/huf_decompress.c
-    contrib/zstd/decompress/huf_decompress_amd64.S
     contrib/zstd/decompress/zstd_ddict.c
     contrib/zstd/decompress/zstd_decompress_block.c
     contrib/zstd/decompress/zstd_decompress.c
@@ -126,6 +140,10 @@ set(ZSTD_SRC
     contrib/zstd/dictBuilder/fastcover.c
     contrib/zstd/dictBuilder/zdict.c
 )
+
+if(NOT WIN32)
+    list(APPEND ZSTD_SRC contrib/zstd/decompress/huf_decompress_amd64.S)
+endif()
 
 set(TERMINATOR_SRC
     contrib/kyotocabinet/kccachedb.cc
@@ -202,188 +220,216 @@ add_library(inn ${INN_SRC})
 target_include_directories(inn PRIVATE ${CMAKE_SOURCE_DIR}/contrib/inn)
 add_library(zstd STATIC ${ZSTD_SRC})
 target_compile_definitions(zstd PUBLIC ZDICT_STATIC_LINKING_ONLY ZSTD_MULTITHREAD)
+if(WIN32)
+    target_compile_definitions(zstd PUBLIC ZSTD_DISABLE_ASM)
+endif()
 
-add_executable(connectivity connectivity/connectivity.cpp)
-target_link_libraries(connectivity PRIVATE common inn lz4)
+if(WIN32)
+    add_executable(winbrowser WIN32
+        winbrowser/ThreadListModel.cpp
+        winbrowser/winbrowser.cpp
+    )
+    target_link_libraries(winbrowser PRIVATE comctl32 ole32 shell32 libuat common icu zstd)
+endif()
 
-add_executable(export-messages export-messages/export-messages.cpp)
-target_link_libraries(export-messages PRIVATE common lz4)
+if(NOT BUILD_WINBROWSER_ONLY)
+    add_executable(connectivity connectivity/connectivity.cpp)
+    target_link_libraries(connectivity PRIVATE common inn lz4)
 
-add_executable(extract-msgid extract-msgid/extract-msgid.cpp)
-target_link_libraries(extract-msgid PRIVATE common lz4)
+    add_executable(export-messages export-messages/export-messages.cpp)
+    target_link_libraries(export-messages PRIVATE common lz4)
 
-add_executable(extract-msgmeta extract-msgmeta/extract-msgmeta.cpp extract-msgmeta/tin.cpp)
-target_link_libraries(extract-msgmeta PRIVATE common lz4)
+    add_executable(extract-msgid extract-msgid/extract-msgid.cpp)
+    target_link_libraries(extract-msgid PRIVATE common lz4)
 
-add_executable(filter-newsgroups filter-newsgroups/filter-newsgroups.cpp)
-target_link_libraries(filter-newsgroups PRIVATE common lz4)
+    add_executable(extract-msgmeta extract-msgmeta/extract-msgmeta.cpp extract-msgmeta/tin.cpp)
+    target_link_libraries(extract-msgmeta PRIVATE common lz4)
 
-add_executable(filter-spam filter-spam/filter-spam.cpp)
-target_link_libraries(filter-spam PRIVATE terminator common zstd lz4)
+    add_executable(filter-newsgroups filter-newsgroups/filter-newsgroups.cpp)
+    target_link_libraries(filter-newsgroups PRIVATE common lz4)
 
-add_executable(galaxy-util galaxy-util/galaxy-util.cpp)
-target_link_libraries(galaxy-util PRIVATE common zstd libuat Tracy::TracyClient)
+    add_executable(filter-spam filter-spam/filter-spam.cpp)
+    target_link_libraries(filter-spam PRIVATE terminator common zstd lz4)
 
-add_executable(google-groups google-groups/google-groups.cpp)
-target_link_libraries(google-groups PRIVATE curl common ssl)
+    add_executable(galaxy-util galaxy-util/galaxy-util.cpp)
+    target_link_libraries(galaxy-util PRIVATE common zstd libuat Tracy::TracyClient)
 
-add_executable(import-source-maildir import-source-maildir/import-source-maildir.cpp)
-target_link_libraries(import-source-maildir PRIVATE common lz4)
+    add_executable(google-groups google-groups/google-groups.cpp)
+    target_link_libraries(google-groups PRIVATE curl common ssl)
 
-add_executable(import-source-maildir-7z import-source-maildir-7z/import-source-maildir-7z.cpp)
-target_link_libraries(import-source-maildir-7z PRIVATE common lz4 lzma)
+    add_executable(import-source-maildir import-source-maildir/import-source-maildir.cpp)
+    target_link_libraries(import-source-maildir PRIVATE common lz4)
 
-add_executable(import-source-mbox import-source-mbox/import-source-mbox.cpp)
-target_link_libraries(import-source-mbox PRIVATE common lz4)
+    add_executable(import-source-maildir-7z import-source-maildir-7z/import-source-maildir-7z.cpp)
+    target_link_libraries(import-source-maildir-7z PRIVATE common lz4 lzma)
 
-add_executable(kill-duplicates kill-duplicates/kill-duplicates.cpp)
-target_link_libraries(kill-duplicates PRIVATE common lz4)
+    add_executable(import-source-mbox import-source-mbox/import-source-mbox.cpp)
+    target_link_libraries(import-source-mbox PRIVATE common lz4)
 
-add_executable(lexdist lexdist/lexdist.cpp)
-target_link_libraries(lexdist PRIVATE common)
+    add_executable(kill-duplicates kill-duplicates/kill-duplicates.cpp)
+    target_link_libraries(kill-duplicates PRIVATE common lz4)
 
-add_executable(lexicon lexicon/lexicon.cpp)
-target_link_libraries(lexicon PRIVATE common icu lz4)
+    add_executable(lexdist lexdist/lexdist.cpp)
+    target_link_libraries(lexdist PRIVATE common)
 
-add_executable(lexsort lexsort/lexsort.cpp)
-target_link_libraries(lexsort PRIVATE common)
+    add_executable(lexicon lexicon/lexicon.cpp)
+    target_link_libraries(lexicon PRIVATE common icu lz4)
 
-add_executable(lexstats lexstats/lexstats.cpp)
-target_link_libraries(lexstats PRIVATE common)
+    add_executable(lexsort lexsort/lexsort.cpp)
+    target_link_libraries(lexsort PRIVATE common)
 
-add_executable(merge-raw merge-raw/merge-raw.cpp)
-target_link_libraries(merge-raw PRIVATE common)
+    add_executable(lexstats lexstats/lexstats.cpp)
+    target_link_libraries(lexstats PRIVATE common)
 
-add_executable(nntp-get nntp-get/nntp-get.cpp nntp-get/Socket.cpp)
-target_link_libraries(nntp-get PRIVATE common inn)
+    add_executable(merge-raw merge-raw/merge-raw.cpp)
+    target_link_libraries(merge-raw PRIVATE common)
 
-add_executable(package package/package.cpp)
-target_link_libraries(package PRIVATE common)
+    add_executable(nntp-get nntp-get/nntp-get.cpp nntp-get/Socket.cpp)
+    target_link_libraries(nntp-get PRIVATE common inn)
 
-add_executable(query query/query.cpp)
-target_link_libraries(query PRIVATE common zstd libuat)
+    add_executable(package package/package.cpp)
+    target_link_libraries(package PRIVATE common)
 
-add_executable(query-raw query-raw/query-raw.cpp)
-target_link_libraries(query-raw PRIVATE common lz4)
+    add_executable(query query/query.cpp)
+    target_link_libraries(query PRIVATE common zstd libuat)
 
-add_executable(relative-complement relative-complement/relative-complement.cpp)
-target_link_libraries(relative-complement PRIVATE common)
+    add_executable(query-raw query-raw/query-raw.cpp)
+    target_link_libraries(query-raw PRIVATE common lz4)
 
-add_executable(repack-lz4 repack-lz4/repack-lz4.cpp)
-target_link_libraries(repack-lz4 PRIVATE common zstd lz4)
+    add_executable(relative-complement relative-complement/relative-complement.cpp)
+    target_link_libraries(relative-complement PRIVATE common)
 
-add_executable(repack-zstd repack-zstd/repack-zstd.cpp)
-target_link_libraries(repack-zstd PRIVATE zstd common lz4)
+    add_executable(repack-lz4 repack-lz4/repack-lz4.cpp)
+    target_link_libraries(repack-lz4 PRIVATE common zstd lz4)
 
-add_executable(sort sort/sort.cpp)
-target_link_libraries(sort PRIVATE common)
+    add_executable(repack-zstd repack-zstd/repack-zstd.cpp)
+    target_link_libraries(repack-zstd PRIVATE zstd common lz4)
 
-add_executable(tbrowser
-    tbrowser/BitSet.cpp
-    tbrowser/BottomBar.cpp
-    tbrowser/Browser.cpp
-    tbrowser/ChartView.cpp
-    tbrowser/GalaxyOpen.cpp
-    tbrowser/GalaxyWarp.cpp
-    tbrowser/HeaderBar.cpp
-    tbrowser/Help.cpp
-    tbrowser/MessageView.cpp
-    tbrowser/SearchView.cpp
-    tbrowser/tbrowser.cpp
-    tbrowser/TextView.cpp
-    tbrowser/ThreadTree.cpp
-    tbrowser/ThreadView.cpp
-    tbrowser/Utf8Print.cpp
-    tbrowser/View.cpp
-)
-target_link_libraries(tbrowser PRIVATE ncurses libuat common icu zstd)
+    add_executable(sort sort/sort.cpp)
+    target_link_libraries(sort PRIVATE common)
 
-add_executable(threadify threadify/threadify.cpp)
-target_link_libraries(threadify PRIVATE common icu zstd libuat)
+    if(NOT WIN32)
+        add_executable(tbrowser
+            tbrowser/BitSet.cpp
+            tbrowser/BottomBar.cpp
+            tbrowser/Browser.cpp
+            tbrowser/ChartView.cpp
+            tbrowser/GalaxyOpen.cpp
+            tbrowser/GalaxyWarp.cpp
+            tbrowser/HeaderBar.cpp
+            tbrowser/Help.cpp
+            tbrowser/MessageView.cpp
+            tbrowser/SearchView.cpp
+            tbrowser/tbrowser.cpp
+            tbrowser/TextView.cpp
+            tbrowser/ThreadTree.cpp
+            tbrowser/ThreadView.cpp
+            tbrowser/Utf8Print.cpp
+            tbrowser/View.cpp
+        )
+        target_link_libraries(tbrowser PRIVATE ncurses libuat common icu zstd)
+    endif()
 
-add_executable(uat uat/uat.cpp)
+    add_executable(threadify threadify/threadify.cpp)
+    target_link_libraries(threadify PRIVATE common icu zstd libuat)
 
-add_executable(update-zstd update-zstd/update-zstd.cpp)
-target_link_libraries(update-zstd PRIVATE zstd common lz4)
+    add_executable(uat uat/uat.cpp)
 
-add_executable(utf8ize utf8ize/utf8ize.cpp)
-target_link_libraries(utf8ize PRIVATE gmime lz4 common)
+    add_executable(update-zstd update-zstd/update-zstd.cpp)
+    target_link_libraries(update-zstd PRIVATE zstd common lz4)
 
-add_executable(verify verify/verify.cpp)
-target_link_libraries(verify PRIVATE common zstd libuat)
+    add_executable(utf8ize utf8ize/utf8ize.cpp)
+    target_link_libraries(utf8ize PRIVATE gmime lz4 common)
 
-add_executable(web web/web.cpp)
-target_link_libraries(web PRIVATE mongoose ini common libuat zstd)
+    add_executable(verify verify/verify.cpp)
+    target_link_libraries(verify PRIVATE common zstd libuat)
 
-install(TARGETS uat RUNTIME DESTINATION bin)
+    add_executable(web web/web.cpp)
+    target_link_libraries(web PRIVATE mongoose ini common libuat zstd)
 
-install(TARGETS
-    connectivity
-    export-messages
-    extract-msgid
-    extract-msgmeta
-    filter-newsgroups
-    filter-spam
-    galaxy-util
-    google-groups
-    import-source-maildir
-    import-source-maildir-7z
-    import-source-mbox
-    kill-duplicates
-    lexdist
-    lexicon
-    lexsort
-    lexstats
-    merge-raw
-    nntp-get
-    package
-    query
-    query-raw
-    relative-complement
-    repack-lz4
-    repack-zstd
-    sort
-    tbrowser
-    threadify
-    update-zstd
-    utf8ize
-    verify
-    web
-    RUNTIME DESTINATION lib/uat
-)
+    install(TARGETS uat RUNTIME DESTINATION bin)
 
-install(FILES
-    man/uat.1
-    man/uat-connectivity.1
-    man/uat-export-messages.1
-    man/uat-extract-msgid.1
-    man/uat-extract-msgmeta.1
-    man/uat-filter-newsgroups.1
-    man/uat-filter-spam.1
-    man/uat-galaxy-util.1
-    man/uat-google-groups.1
-    man/uat-import-source-maildir.1
-    man/uat-import-source-maildir-7z.1
-    man/uat-import-source-mbox.1
-    man/uat-kill-duplicates.1
-    man/uat-lexdist.1
-    man/uat-lexicon.1
-    man/uat-lexsort.1
-    man/uat-lexstats.1
-    man/uat-libuat.1
-    man/uat-merge-raw.1
-    man/uat-nntp-get.1
-    man/uat-package.1
-    man/uat-query.1
-    man/uat-query-raw.1
-    man/uat-relative-complement.1
-    man/uat-repack-lz4.1
-    man/uat-repack-zstd.1
-    man/uat-sort.1
-    man/uat-tbrowser.1
-    man/uat-threadify.1
-    man/uat-update-zstd.1
-    man/uat-utf8ize.1
-    man/uat-verify.1
-    DESTINATION share/man/man1
-)
+    set(UAT_RUNTIME_TARGETS
+        connectivity
+        export-messages
+        extract-msgid
+        extract-msgmeta
+        filter-newsgroups
+        filter-spam
+        galaxy-util
+        google-groups
+        import-source-maildir
+        import-source-maildir-7z
+        import-source-mbox
+        kill-duplicates
+        lexdist
+        lexicon
+        lexsort
+        lexstats
+        merge-raw
+        nntp-get
+        package
+        query
+        query-raw
+        relative-complement
+        repack-lz4
+        repack-zstd
+        sort
+        threadify
+        update-zstd
+        utf8ize
+        verify
+        web
+    )
+
+    if(NOT WIN32)
+        list(APPEND UAT_RUNTIME_TARGETS tbrowser)
+    endif()
+
+    install(TARGETS
+        ${UAT_RUNTIME_TARGETS}
+        RUNTIME DESTINATION lib/uat
+    )
+endif()
+
+if(WIN32)
+    install(TARGETS winbrowser RUNTIME DESTINATION bin)
+endif()
+
+if(NOT BUILD_WINBROWSER_ONLY)
+    install(FILES
+        man/uat.1
+        man/uat-connectivity.1
+        man/uat-export-messages.1
+        man/uat-extract-msgid.1
+        man/uat-extract-msgmeta.1
+        man/uat-filter-newsgroups.1
+        man/uat-filter-spam.1
+        man/uat-galaxy-util.1
+        man/uat-google-groups.1
+        man/uat-import-source-maildir.1
+        man/uat-import-source-maildir-7z.1
+        man/uat-import-source-mbox.1
+        man/uat-kill-duplicates.1
+        man/uat-lexdist.1
+        man/uat-lexicon.1
+        man/uat-lexsort.1
+        man/uat-lexstats.1
+        man/uat-libuat.1
+        man/uat-merge-raw.1
+        man/uat-nntp-get.1
+        man/uat-package.1
+        man/uat-query.1
+        man/uat-query-raw.1
+        man/uat-relative-complement.1
+        man/uat-repack-lz4.1
+        man/uat-repack-zstd.1
+        man/uat-sort.1
+        man/uat-tbrowser.1
+        man/uat-threadify.1
+        man/uat-update-zstd.1
+        man/uat-utf8ize.1
+        man/uat-verify.1
+        DESTINATION share/man/man1
+    )
+endif()
