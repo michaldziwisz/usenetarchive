@@ -82,6 +82,7 @@ enum : int
 enum : UINT
 {
     WM_APP_SYNC_THREAD_PREVIEW = WM_APP + 1,
+    WM_APP_REASSERT_TREE_FOCUS = WM_APP + 2,
 };
 
 std::wstring Utf8ToWide( const std::string& text )
@@ -228,6 +229,33 @@ std::wstring PairToWideString( const std::pair<const char*, uint64_t>& value )
     return Utf8ToWide( std::string( value.first, value.second ) );
 }
 
+UINT MapTreeItemToAccessibilityId( HWND hwnd, HTREEITEM item )
+{
+#ifdef TVM_MAPHTREEITEMTOACCID
+    return item ? UINT( SendMessageW( hwnd, TVM_MAPHTREEITEMTOACCID, WPARAM( item ), 0 ) ) : 0;
+#else
+    (void)hwnd;
+    (void)item;
+    return 0;
+#endif
+}
+
+void ReassertTreeItemFocus( HWND hwnd, HTREEITEM item )
+{
+    if( !item ) return;
+
+    TreeView_SelectItem( hwnd, item );
+    TreeView_Select( hwnd, item, TVGN_CARET );
+    TreeView_Select( hwnd, item, TVGN_FIRSTVISIBLE );
+    TreeView_EnsureVisible( hwnd, item );
+
+    const auto accId = MapTreeItemToAccessibilityId( hwnd, item );
+    if( accId != 0 )
+    {
+        NotifyWinEvent( EVENT_OBJECT_FOCUS, hwnd, OBJID_CLIENT, LONG( accId ) );
+    }
+}
+
 bool StartsWithCaseInsensitive( const std::wstring& text, const wchar_t* prefix )
 {
     const auto prefixLen = wcslen( prefix );
@@ -370,8 +398,15 @@ LRESULT CALLBACK ThreadTreeFocusSubclassProc( HWND hwnd, UINT msg, WPARAM wParam
     case WM_SETFOCUS:
         if( const auto item = TreeView_GetSelection( hwnd ) )
         {
-            TreeView_Select( hwnd, item, TVGN_CARET );
-            TreeView_Select( hwnd, item, TVGN_FIRSTVISIBLE );
+            ReassertTreeItemFocus( hwnd, item );
+            PostMessageW( hwnd, WM_APP_REASSERT_TREE_FOCUS, 0, LPARAM( item ) );
+        }
+        break;
+    case WM_APP_REASSERT_TREE_FOCUS:
+        if( GetFocus() == hwnd )
+        {
+            ReassertTreeItemFocus( hwnd, HTREEITEM( lParam ) );
+            return 0;
         }
         break;
     default:
