@@ -209,6 +209,7 @@ set(INN_SRC
 )
 
 add_library(common ${COMMON_SRC})
+target_link_libraries(common PUBLIC icu)
 add_library(libuat ${LIBUAT_SRC})
 target_link_libraries(libuat PUBLIC common)
 add_library(terminator STATIC ${TERMINATOR_SRC})
