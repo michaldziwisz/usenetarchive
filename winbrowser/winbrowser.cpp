@@ -300,6 +300,24 @@ LRESULT CALLBACK ForwardPanelMessagesSubclassProc( HWND hwnd, UINT msg, WPARAM w
     return DefSubclassProc( hwnd, msg, wParam, lParam );
 }
 
+LRESULT CALLBACK ThreadTreeFocusSubclassProc( HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam, UINT_PTR, DWORD_PTR )
+{
+    switch( msg )
+    {
+    case WM_SETFOCUS:
+        if( const auto item = TreeView_GetSelection( hwnd ) )
+        {
+            TreeView_Select( hwnd, item, TVGN_CARET );
+            TreeView_Select( hwnd, item, TVGN_FIRSTVISIBLE );
+        }
+        break;
+    default:
+        break;
+    }
+
+    return DefSubclassProc( hwnd, msg, wParam, lParam );
+}
+
 }  // namespace
 
 class WinBrowserWindow
@@ -538,6 +556,7 @@ private:
             m_instance,
             nullptr
         );
+        SetWindowSubclass( m_threadList, &ThreadTreeFocusSubclassProc, 0, 0 );
 
         m_searchLabel = CreateWindowExW( 0, L"STATIC", L"Search query:", WS_CHILD | WS_VISIBLE, 0, 0, 100, 24, m_searchPanel, reinterpret_cast<HMENU>( IDC_SEARCH_LABEL ), m_instance, nullptr );
         m_searchEdit = CreateWindowExW( WS_EX_CLIENTEDGE, L"EDIT", L"", WS_CHILD | WS_VISIBLE | WS_TABSTOP | ES_AUTOHSCROLL, 0, 0, 100, 24, m_searchPanel, reinterpret_cast<HMENU>( IDC_SEARCH_EDIT ), m_instance, nullptr );
