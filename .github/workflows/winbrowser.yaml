@@ -36,7 +36,11 @@ jobs:
       - name: Build
         shell: msys2 {0}
         run: |
-          cmake --build build --target winbrowser --parallel
+          set -o pipefail
+          if ! cmake --build build --target winbrowser --parallel > build.log 2>&1; then
+            tail -n 200 build.log
+            exit 1
+          fi
 
       - name: Prepare artifact
         shell: msys2 {0}
