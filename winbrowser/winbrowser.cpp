@@ -245,20 +245,32 @@ int GetSingleSelectedRow( HWND list )
     return ListView_GetNextItem( list, -1, LVNI_SELECTED );
 }
 
+bool MoveFocusToNextDialogItem( HWND hwnd, bool previous )
+{
+    const auto root = GetAncestor( hwnd, GA_ROOT );
+    if( !root ) return false;
+
+    const auto target = GetNextDlgTabItem( root, hwnd, previous ? TRUE : FALSE );
+    if( !target || target == hwnd ) return false;
+
+    SetFocus( target );
+    return true;
+}
+
 LRESULT CALLBACK ReadOnlyPaneSubclassProc( HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam, UINT_PTR, DWORD_PTR )
 {
     switch( msg )
     {
     case WM_GETDLGCODE:
+        if( wParam == VK_TAB ) return 0;
         return DefSubclassProc( hwnd, msg, wParam, lParam ) & ~DLGC_WANTTAB;
     case WM_KEYDOWN:
+    case WM_CHAR:
         if( wParam == VK_TAB )
         {
-            auto root = GetAncestor( hwnd, GA_ROOT );
-            if( root )
+            const auto previous = ( GetKeyState( VK_SHIFT ) & 0x8000 ) != 0;
+            if( MoveFocusToNextDialogItem( hwnd, previous ) )
             {
-                const auto previous = ( GetKeyState( VK_SHIFT ) & 0x8000 ) != 0;
-                SendMessageW( root, WM_NEXTDLGCTL, previous ? TRUE : FALSE, FALSE );
                 return 0;
             }
         }
@@ -941,10 +953,15 @@ private:
     {
         if( !parentItem || parentMessage >= m_threadChildrenLoaded.size() || m_threadChildrenLoaded[parentMessage] ) return;
 
-        const auto children = m_archive->GetChildren( parentMessage );
-        for( uint64_t i=0; i<children.size; i++ )
+        const auto subtreeEnd = parentMessage + m_archive->GetTotalChildrenCount( parentMessage );
+        auto child = parentMessage + 1;
+        while( child < subtreeEnd )
         {
-            InsertThreadItem( parentItem, children.ptr[i] );
+            if( m_archive->GetParent( child ) == int32_t( parentMessage ) )
+            {
+                InsertThreadItem( parentItem, child );
+            }
+            child += m_archive->GetTotalChildrenCount( child );
         }
         m_threadChildrenLoaded[parentMessage] = 1;
     }
@@ -957,10 +974,12 @@ private:
 
         if( !m_archive ) return;
 
-        const auto topLevel = m_archive->GetTopLevel();
-        for( uint64_t i=0; i<topLevel.size; i++ )
+        const auto messageCount = uint32_t( m_archive->NumberOfMessages() );
+        uint32_t current = 0;
+        while( current < messageCount )
         {
-            InsertThreadItem( TVI_ROOT, topLevel.ptr[i] );
+            InsertThreadItem( TVI_ROOT, current );
+            current += m_archive->GetTotalChildrenCount( current );
         }
     }
 
