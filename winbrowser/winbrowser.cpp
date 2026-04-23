@@ -78,6 +78,11 @@ enum : int
     ID_HELP_SHORTCUTS,
 };
 
+enum : UINT
+{
+    WM_APP_SYNC_THREAD_PREVIEW = WM_APP + 1,
+};
+
 std::wstring Utf8ToWide( const std::string& text )
 {
     if( text.empty() ) return {};
@@ -362,6 +367,9 @@ private:
         case WM_NOTIFY:
             if( HandleNotify( reinterpret_cast<NMHDR*>( lParam ) ) ) return 0;
             break;
+        case WM_APP_SYNC_THREAD_PREVIEW:
+            SyncSelectedThreadPreview();
+            return 0;
         case WM_SETFOCUS:
             FocusPrimaryControl();
             return 0;
@@ -781,13 +789,28 @@ private:
         {
             switch( hdr->code )
             {
-            case TVN_SELCHANGEDW:
-                HandleThreadSelectionChanged( reinterpret_cast<const NMTREEVIEWW*>( hdr ) );
+            case TVN_SELCHANGEDA:
+                HandleThreadSelectionChanged( reinterpret_cast<const NMTREEVIEWA*>( hdr )->itemNew.hItem );
                 return true;
+            case TVN_SELCHANGEDW:
+                HandleThreadSelectionChanged( reinterpret_cast<const NMTREEVIEWW*>( hdr )->itemNew.hItem );
+                return true;
+            case TVN_ITEMEXPANDINGA:
+                return HandleThreadExpanding(
+                    reinterpret_cast<const NMTREEVIEWA*>( hdr )->itemNew.hItem,
+                    reinterpret_cast<const NMTREEVIEWA*>( hdr )->action
+                );
             case TVN_ITEMEXPANDINGW:
-                return HandleThreadExpanding( reinterpret_cast<const NMTREEVIEWW*>( hdr ) );
+                return HandleThreadExpanding(
+                    reinterpret_cast<const NMTREEVIEWW*>( hdr )->itemNew.hItem,
+                    reinterpret_cast<const NMTREEVIEWW*>( hdr )->action
+                );
             case TVN_KEYDOWN:
                 return HandleThreadKeyDown( reinterpret_cast<const NMTVKEYDOWN*>( hdr ) );
+            case NM_CLICK:
+            case NM_SETFOCUS:
+                PostSyncThreadPreview();
+                break;
             case NM_DBLCLK:
             case NM_RETURN:
                 SetFocus( m_bodyEdit );
@@ -992,10 +1015,26 @@ private:
         TreeView_SetItem( m_threadList, &data );
     }
 
-    void HandleThreadSelectionChanged( const NMTREEVIEWW* info )
+    void PostSyncThreadPreview()
+    {
+        PostMessageW( m_hwnd, WM_APP_SYNC_THREAD_PREVIEW, 0, 0 );
+    }
+
+    void SyncSelectedThreadPreview()
     {
         if( m_ignoreThreadSelection ) return;
-        const auto message = GetThreadMessage( info->itemNew.hItem );
+
+        const auto item = TreeView_GetSelection( m_threadList );
+        const auto message = GetThreadMessage( item );
+        if( message == InvalidMessage || message == m_selectedMessage ) return;
+
+        DisplayMessage( message, true );
+    }
+
+    void HandleThreadSelectionChanged( HTREEITEM item )
+    {
+        if( m_ignoreThreadSelection ) return;
+        const auto message = GetThreadMessage( item );
         if( message == InvalidMessage ) return;
         if( message != m_selectedMessage ) DisplayMessage( message, true );
     }
@@ -1011,20 +1050,20 @@ private:
         if( message != m_selectedMessage ) DisplayMessage( message, true );
     }
 
-    bool HandleThreadExpanding( const NMTREEVIEWW* info )
+    bool HandleThreadExpanding( HTREEITEM item, UINT action )
     {
-        const auto message = GetThreadMessage( info->itemNew.hItem );
+        const auto message = GetThreadMessage( item );
         if( message == InvalidMessage ) return false;
 
-        if( ( info->action & TVE_EXPAND ) != 0 )
+        if( ( action & TVE_EXPAND ) != 0 )
         {
-            PopulateThreadChildren( info->itemNew.hItem, message );
+            PopulateThreadChildren( item, message );
             if( m_threadModel.CanExpand( message ) && !m_threadModel.IsExpanded( message ) )
             {
                 m_threadModel.Expand( message, false );
             }
         }
-        else if( ( info->action & TVE_COLLAPSE ) != 0 )
+        else if( ( action & TVE_COLLAPSE ) != 0 )
         {
             if( m_threadModel.IsExpanded( message ) ) m_threadModel.Collapse( message );
         }
@@ -1043,9 +1082,61 @@ private:
             if( ( GetKeyState( VK_CONTROL ) & 0x8000 ) != 0 )
             {
                 ExpandThreadSubtree( item, message );
+                PostSyncThreadPreview();
+                return true;
+            }
+            if( MessageHasChildren( message ) )
+            {
+                PopulateThreadChildren( item, message );
+                const auto expanded = ( TreeView_GetItemState( m_threadList, item, TVIS_EXPANDED ) & TVIS_EXPANDED ) != 0;
+                if( !expanded )
+                {
+                    TreeView_Expand( m_threadList, item, TVE_EXPAND );
+                    if( m_threadModel.CanExpand( message ) && !m_threadModel.IsExpanded( message ) )
+                    {
+                        m_threadModel.Expand( message, false );
+                    }
+                }
+                else if( const auto child = TreeView_GetChild( m_threadList, item ) )
+                {
+                    TreeView_SelectItem( m_threadList, child );
+                    TreeView_EnsureVisible( m_threadList, child );
+                }
+                PostSyncThreadPreview();
                 return true;
             }
             break;
+        case VK_LEFT:
+        {
+            const auto expanded = ( TreeView_GetItemState( m_threadList, item, TVIS_EXPANDED ) & TVIS_EXPANDED ) != 0;
+            if( expanded && MessageHasChildren( message ) )
+            {
+                TreeView_Expand( m_threadList, item, TVE_COLLAPSE );
+                if( m_threadModel.IsExpanded( message ) ) m_threadModel.Collapse( message );
+                PostSyncThreadPreview();
+                return true;
+            }
+            if( const auto parent = TreeView_GetParent( m_threadList, item ) )
+            {
+                TreeView_SelectItem( m_threadList, parent );
+                TreeView_EnsureVisible( m_threadList, parent );
+                PostSyncThreadPreview();
+                return true;
+            }
+            break;
+        }
+        case VK_UP:
+        case VK_DOWN:
+        case VK_HOME:
+        case VK_END:
+        case VK_PRIOR:
+        case VK_NEXT:
+            PostSyncThreadPreview();
+            break;
+        case VK_MULTIPLY:
+            ExpandThreadSubtree( item, message );
+            PostSyncThreadPreview();
+            return true;
         case VK_RETURN:
             SetFocus( m_bodyEdit );
             return true;
