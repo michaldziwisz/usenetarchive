@@ -13,6 +13,10 @@
 #include <shobjidl.h>
 #include <shellapi.h>
 
+#ifdef GetMessage
+#  undef GetMessage
+#endif
+
 #include <algorithm>
 #include <memory>
 #include <string>
@@ -1257,7 +1261,7 @@ private:
             return;
         }
 
-        const auto raw = ( m_archive->GetMessage )( m_selectedMessage, m_messageBuffer );
+        const auto raw = m_archive->GetMessage( m_selectedMessage, m_messageBuffer );
         if( !raw )
         {
             ClearDisplayedMessage();
