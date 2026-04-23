@@ -18,6 +18,7 @@
 #endif
 
 #include <algorithm>
+#include <cwctype>
 #include <memory>
 #include <string>
 #include <time.h>
@@ -139,7 +140,13 @@ std::wstring FormatDateTime( time_t value )
     if( value == 0 ) return L"Unknown";
 
     tm local = {};
+#ifdef _MSC_VER
     localtime_s( &local, &value );
+#else
+    const auto localTime = localtime( &value );
+    if( !localTime ) return L"Unknown";
+    local = *localTime;
+#endif
 
     wchar_t buf[64];
     if( wcsftime( buf, sizeof( buf ) / sizeof( *buf ), L"%Y-%m-%d %H:%M:%S", &local ) == 0 )
@@ -219,6 +226,22 @@ const char* FindBodyStart( const char* message )
 std::wstring PairToWideString( const std::pair<const char*, uint64_t>& value )
 {
     return Utf8ToWide( std::string( value.first, value.second ) );
+}
+
+bool StartsWithCaseInsensitive( const std::wstring& text, const wchar_t* prefix )
+{
+    const auto prefixLen = wcslen( prefix );
+    if( text.size() < prefixLen ) return false;
+
+    for( size_t i=0; i<prefixLen; i++ )
+    {
+        if( std::towlower( text[i] ) != std::towlower( prefix[i] ) )
+        {
+            return false;
+        }
+    }
+
+    return true;
 }
 
 std::wstring GetWindowTextString( HWND wnd )
@@ -1311,7 +1334,7 @@ private:
     bool TryOpenInternalNewsLink( const std::wstring& target )
     {
         if( !m_archive ) return false;
-        if( target.size() <= 5 || _wcsnicmp( target.c_str(), L"news:", 5 ) != 0 ) return false;
+        if( !StartsWithCaseInsensitive( target, L"news:" ) ) return false;
 
         const auto msgid = target.substr( 5 );
         if( msgid.empty() || msgid.find( L'/' ) != std::wstring::npos ) return false;

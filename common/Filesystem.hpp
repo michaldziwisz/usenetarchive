@@ -17,7 +17,7 @@ void CopyFile( const std::string& from, const std::string& to );
 
 void CopyCommonFiles( const std::string& source, const std::string& target );
 
-#ifdef _MSC_VER
+#if defined _MSC_VER || defined __MINGW32__
 #  define stat64 _stat64
 #endif
 #if defined __CYGWIN__ || defined __APPLE__
