@@ -3,7 +3,7 @@
 
 #include <assert.h>
 
-#if defined _MSC_VER || defined __CYGWIN__
+#if defined _MSC_VER || defined __MINGW32__ || defined __CYGWIN__
 
 #  include <windows.h>
 
