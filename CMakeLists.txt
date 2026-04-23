@@ -231,6 +231,9 @@ if(WIN32)
         winbrowser/winbrowser.cpp
     )
     target_link_libraries(winbrowser PRIVATE comctl32 ole32 shell32 uuid libuat common icu zstd)
+    if(MINGW)
+        target_link_options(winbrowser PRIVATE -municode)
+    endif()
 endif()
 
 if(NOT BUILD_WINBROWSER_ONLY)
