@@ -257,12 +257,28 @@ bool MoveFocusToNextDialogItem( HWND hwnd, bool previous )
     return true;
 }
 
+bool HandleEscapeForControl( HWND hwnd )
+{
+    const auto root = GetAncestor( hwnd, GA_ROOT );
+    if( !root ) return true;
+
+    if( GetDlgCtrlID( hwnd ) == IDC_BODY_EDIT )
+    {
+        if( const auto threadList = GetDlgItem( root, IDC_THREAD_LIST ) )
+        {
+            SetFocus( threadList );
+        }
+    }
+    return true;
+}
+
 LRESULT CALLBACK ReadOnlyPaneSubclassProc( HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam, UINT_PTR, DWORD_PTR )
 {
     switch( msg )
     {
     case WM_GETDLGCODE:
         if( wParam == VK_TAB ) return 0;
+        if( wParam == VK_ESCAPE ) return DefSubclassProc( hwnd, msg, wParam, lParam ) | DLGC_WANTMESSAGE;
         return DefSubclassProc( hwnd, msg, wParam, lParam ) & ~DLGC_WANTTAB;
     case WM_KEYDOWN:
     case WM_CHAR:
@@ -273,6 +289,33 @@ LRESULT CALLBACK ReadOnlyPaneSubclassProc( HWND hwnd, UINT msg, WPARAM wParam, L
             {
                 return 0;
             }
+        }
+        if( wParam == VK_ESCAPE )
+        {
+            HandleEscapeForControl( hwnd );
+            return 0;
+        }
+        break;
+    default:
+        break;
+    }
+
+    return DefSubclassProc( hwnd, msg, wParam, lParam );
+}
+
+LRESULT CALLBACK EscapeKeySubclassProc( HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam, UINT_PTR, DWORD_PTR )
+{
+    switch( msg )
+    {
+    case WM_GETDLGCODE:
+        if( wParam == VK_ESCAPE ) return DefSubclassProc( hwnd, msg, wParam, lParam ) | DLGC_WANTMESSAGE;
+        break;
+    case WM_KEYDOWN:
+    case WM_CHAR:
+        if( wParam == VK_ESCAPE )
+        {
+            HandleEscapeForControl( hwnd );
+            return 0;
         }
         break;
     default:
@@ -503,6 +546,7 @@ private:
         );
         if( !m_tab ) return false;
         SendMessageW( m_tab, WM_SETFONT, WPARAM( m_font ), TRUE );
+        SetWindowSubclass( m_tab, &EscapeKeySubclassProc, 0, 0 );
 
         TCITEMW item = {};
         item.mask = TCIF_TEXT;
@@ -556,6 +600,7 @@ private:
             m_instance,
             nullptr
         );
+        SetWindowSubclass( m_threadList, &EscapeKeySubclassProc, 0, 0 );
         SetWindowSubclass( m_threadList, &ThreadTreeFocusSubclassProc, 0, 0 );
 
         m_searchLabel = CreateWindowExW( 0, L"STATIC", L"Search query:", WS_CHILD | WS_VISIBLE, 0, 0, 100, 24, m_searchPanel, reinterpret_cast<HMENU>( IDC_SEARCH_LABEL ), m_instance, nullptr );
@@ -576,6 +621,9 @@ private:
             m_instance,
             nullptr
         );
+        SetWindowSubclass( m_searchEdit, &EscapeKeySubclassProc, 0, 0 );
+        SetWindowSubclass( m_searchButton, &EscapeKeySubclassProc, 0, 0 );
+        SetWindowSubclass( m_resultsList, &EscapeKeySubclassProc, 0, 0 );
 
         m_detailsLabel = CreateWindowExW( 0, L"STATIC", L"Message summary", WS_CHILD | WS_VISIBLE, 0, 0, 100, 24, m_hwnd, reinterpret_cast<HMENU>( IDC_DETAILS_LABEL ), m_instance, nullptr );
         m_detailsEdit = CreateWindowExW(
