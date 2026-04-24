@@ -275,25 +275,24 @@ int GetSingleSelectedRow( HWND list )
 void EnsureListBoxVisible( HWND list, int row )
 {
     if( row < 0 ) return;
-    SendMessageW( list, LB_SETTOPINDEX, row, 0 );
+    SendMessageW( list, CB_SETTOPINDEX, row, 0 );
 }
 
 int GetListBoxSelection( HWND list )
 {
-    const auto row = int( SendMessageW( list, LB_GETCURSEL, 0, 0 ) );
-    return row == LB_ERR ? -1 : row;
+    const auto row = int( SendMessageW( list, CB_GETCURSEL, 0, 0 ) );
+    return row == CB_ERR ? -1 : row;
 }
 
 void SetListBoxSelection( HWND list, int row )
 {
     if( row < 0 ) return;
     const auto previousSelection = GetListBoxSelection( list );
-    const auto previousTop = int( SendMessageW( list, LB_GETTOPINDEX, 0, 0 ) );
+    const auto previousTop = int( SendMessageW( list, CB_GETTOPINDEX, 0, 0 ) );
     if( previousSelection != row )
     {
-        SendMessageW( list, LB_SETCURSEL, row, 0 );
+        SendMessageW( list, CB_SETCURSEL, row, 0 );
     }
-    SendMessageW( list, LB_SETCARETINDEX, row, FALSE );
     EnsureListBoxVisible( list, row );
     if( previousSelection != row || previousTop != row )
     {
@@ -695,9 +694,9 @@ private:
         m_threadListLabel = CreateWindowExW( 0, L"STATIC", L"Thread list", WS_CHILD | WS_VISIBLE, 0, 0, 100, 24, m_browsePanel, reinterpret_cast<HMENU>( IDC_THREAD_LIST_LABEL ), m_instance, nullptr );
         m_threadList = CreateWindowExW(
             WS_EX_CLIENTEDGE,
-            L"LISTBOX",
+            WC_COMBOBOXW,
             L"",
-            WS_CHILD | WS_VISIBLE | WS_TABSTOP | LBS_NOTIFY | LBS_NOINTEGRALHEIGHT,
+            WS_CHILD | WS_VISIBLE | WS_TABSTOP | CBS_DROPDOWNLIST | CBS_NOINTEGRALHEIGHT | WS_VSCROLL,
             0,
             0,
             100,
@@ -893,9 +892,9 @@ private:
         GetClientRect( m_browsePanel, &panel );
         const int threadLabelHeight = Scale( 20 );
         const int threadGap = Scale( 6 );
-        const int threadListHeight = Scale( 28 );
+        const int threadListHeight = std::max( Scale( 240 ), std::max( 0, int( panel.bottom ) - threadLabelHeight - threadGap ) );
         SetWindowPos( m_threadListLabel, nullptr, 0, 0, int( panel.right ), threadLabelHeight, SWP_NOZORDER );
-        SetWindowPos( m_threadList, nullptr, 0, threadLabelHeight + threadGap, int( panel.right ), std::min( threadListHeight, std::max( 0, int( panel.bottom ) - threadLabelHeight - threadGap ) ), SWP_NOZORDER );
+        SetWindowPos( m_threadList, nullptr, 0, threadLabelHeight + threadGap, int( panel.right ), threadListHeight, SWP_NOZORDER );
 
         RECT searchPanel = {};
         GetClientRect( m_searchPanel, &searchPanel );
@@ -946,12 +945,7 @@ private:
 
         if( control == m_threadList )
         {
-            if( code == LBN_DBLCLK )
-            {
-                SetFocus( m_bodyEdit );
-                return true;
-            }
-            if( code == LBN_SELCHANGE )
+            if( code == CBN_SELCHANGE )
             {
                 HandleThreadSelectionChanged( GetListBoxSelection( m_threadList ) );
                 return true;
@@ -1130,11 +1124,11 @@ private:
     {
         m_ignoreThreadSelection = true;
         SendMessageW( m_threadList, WM_SETREDRAW, FALSE, 0 );
-        SendMessageW( m_threadList, LB_RESETCONTENT, 0, 0 );
+        SendMessageW( m_threadList, CB_RESETCONTENT, 0, 0 );
 
         if( m_threadModel.VisibleCount() == 0 )
         {
-            SendMessageW( m_threadList, LB_ADDSTRING, 0, LPARAM( L"No thread selected." ) );
+            SendMessageW( m_threadList, CB_ADDSTRING, 0, LPARAM( L"No thread selected." ) );
             SetListBoxSelection( m_threadList, 0 );
             SendMessageW( m_threadList, WM_SETREDRAW, TRUE, 0 );
             InvalidateRect( m_threadList, nullptr, TRUE );
@@ -1142,11 +1136,11 @@ private:
             return;
         }
 
-        SendMessageW( m_threadList, LB_INITSTORAGE, WPARAM( m_threadModel.VisibleCount() ), LPARAM( m_threadModel.VisibleCount() * 128 ) );
+        SendMessageW( m_threadList, CB_INITSTORAGE, WPARAM( m_threadModel.VisibleCount() ), LPARAM( m_threadModel.VisibleCount() * 128 ) );
         for( size_t row=0; row<m_threadModel.VisibleCount(); row++ )
         {
             const auto text = BuildThreadItemText( row );
-            SendMessageW( m_threadList, LB_ADDSTRING, 0, LPARAM( text.c_str() ) );
+            SendMessageW( m_threadList, CB_ADDSTRING, 0, LPARAM( text.c_str() ) );
         }
 
         const auto row = std::max( 0, CurrentThreadRow() );
@@ -1161,20 +1155,20 @@ private:
         if( row < 0 || size_t( row ) >= m_threadModel.VisibleCount() ) return;
 
         const auto text = BuildThreadItemText( size_t( row ) );
-        SendMessageW( m_threadList, LB_DELETESTRING, row, 0 );
-        SendMessageW( m_threadList, LB_INSERTSTRING, row, LPARAM( text.c_str() ) );
+        SendMessageW( m_threadList, CB_DELETESTRING, row, 0 );
+        SendMessageW( m_threadList, CB_INSERTSTRING, row, LPARAM( text.c_str() ) );
     }
 
     void InsertThreadRows( int startRow, size_t count )
     {
         if( count == 0 ) return;
 
-        SendMessageW( m_threadList, LB_INITSTORAGE, WPARAM( m_threadModel.VisibleCount() ), LPARAM( count * 128 ) );
+        SendMessageW( m_threadList, CB_INITSTORAGE, WPARAM( m_threadModel.VisibleCount() ), LPARAM( count * 128 ) );
         for( size_t offset=0; offset<count; offset++ )
         {
             const auto row = startRow + int( offset );
             const auto text = BuildThreadItemText( size_t( row ) );
-            SendMessageW( m_threadList, LB_INSERTSTRING, row, LPARAM( text.c_str() ) );
+            SendMessageW( m_threadList, CB_INSERTSTRING, row, LPARAM( text.c_str() ) );
         }
     }
 
@@ -1182,7 +1176,7 @@ private:
     {
         for( size_t offset=0; offset<count; offset++ )
         {
-            SendMessageW( m_threadList, LB_DELETESTRING, startRow, 0 );
+            SendMessageW( m_threadList, CB_DELETESTRING, startRow, 0 );
         }
     }
 
