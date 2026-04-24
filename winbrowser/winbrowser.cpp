@@ -287,12 +287,18 @@ int GetListBoxSelection( HWND list )
 void SetListBoxSelection( HWND list, int row )
 {
     if( row < 0 ) return;
-    if( GetListBoxSelection( list ) != row )
+    const auto previousSelection = GetListBoxSelection( list );
+    const auto previousTop = int( SendMessageW( list, LB_GETTOPINDEX, 0, 0 ) );
+    if( previousSelection != row )
     {
         SendMessageW( list, LB_SETCURSEL, row, 0 );
     }
     SendMessageW( list, LB_SETCARETINDEX, row, FALSE );
     EnsureListBoxVisible( list, row );
+    if( previousSelection != row || previousTop != row )
+    {
+        RedrawWindow( list, nullptr, nullptr, RDW_INVALIDATE | RDW_ERASE | RDW_UPDATENOW );
+    }
 }
 
 bool MoveFocusToNextDialogItem( HWND hwnd, bool previous )
@@ -1279,6 +1285,9 @@ private:
         const auto message = GetThreadMessage( row );
         if( message == InvalidMessage || message == m_selectedMessage ) return;
 
+        m_ignoreThreadSelection = true;
+        SetListBoxSelection( m_threadList, row );
+        m_ignoreThreadSelection = false;
         DisplayMessage( message, true );
     }
 
