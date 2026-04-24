@@ -269,6 +269,26 @@ int GetSingleSelectedRow( HWND list )
     return ListView_GetNextItem( list, -1, LVNI_SELECTED );
 }
 
+void EnsureListBoxVisible( HWND list, int row )
+{
+    if( row < 0 ) return;
+    SendMessageW( list, LB_SETTOPINDEX, row, 0 );
+}
+
+void SetListBoxSelection( HWND list, int row )
+{
+    if( row < 0 ) return;
+    SendMessageW( list, LB_SETCURSEL, row, 0 );
+    SendMessageW( list, LB_SETCARETINDEX, row, FALSE );
+    EnsureListBoxVisible( list, row );
+}
+
+int GetListBoxSelection( HWND list )
+{
+    const auto row = int( SendMessageW( list, LB_GETCURSEL, 0, 0 ) );
+    return row == LB_ERR ? -1 : row;
+}
+
 bool MoveFocusToNextDialogItem( HWND hwnd, bool previous )
 {
     const auto root = GetAncestor( hwnd, GA_ROOT );
@@ -357,7 +377,7 @@ LRESULT CALLBACK ThreadNavigatorSubclassProc( HWND hwnd, UINT msg, WPARAM wParam
         }
         break;
     case WM_SETFOCUS:
-        SendMessageW( hwnd, EM_SETSEL, 0, 0 );
+        SetListBoxSelection( hwnd, 0 );
         break;
     case WM_KEYDOWN:
         if( wParam == VK_LEFT || wParam == VK_RIGHT || wParam == VK_UP || wParam == VK_DOWN || wParam == VK_HOME || wParam == VK_END || wParam == VK_PRIOR || wParam == VK_NEXT || wParam == VK_MULTIPLY || wParam == VK_RETURN )
@@ -625,9 +645,9 @@ private:
 
         m_threadList = CreateWindowExW(
             WS_EX_CLIENTEDGE,
-            L"EDIT",
+            L"LISTBOX",
             L"",
-            WS_CHILD | WS_VISIBLE | WS_TABSTOP | ES_AUTOHSCROLL,
+            WS_CHILD | WS_VISIBLE | WS_TABSTOP | LBS_NOTIFY | LBS_NOINTEGRALHEIGHT,
             0,
             0,
             100,
@@ -637,7 +657,6 @@ private:
             m_instance,
             nullptr
         );
-        SendMessageW( m_threadList, EM_SETREADONLY, TRUE, 0 );
         SetWindowSubclass( m_threadList, &EscapeKeySubclassProc, 0, 0 );
         SetWindowSubclass( m_threadList, &ThreadNavigatorSubclassProc, 0, 0 );
 
@@ -865,6 +884,19 @@ private:
             return true;
         }
 
+        if( control == m_threadList )
+        {
+            if( code == LBN_DBLCLK )
+            {
+                SetFocus( m_bodyEdit );
+                return true;
+            }
+            if( code == LBN_SELCHANGE )
+            {
+                return true;
+            }
+        }
+
         const auto focus = GetFocus();
 
         switch( id )
@@ -979,15 +1011,38 @@ private:
         auto subject = Utf8ToWide( m_archive->GetSubject( data.messageIndex ) );
         if( subject.empty() ) subject = L"(no subject)";
 
+        auto author = Utf8ToWide( m_archive->GetRealName( data.messageIndex ) );
+        if( author.empty() )
+        {
+            author = Utf8ToWide( m_archive->GetFrom( data.messageIndex ) );
+        }
+
         std::wstring text = std::move( subject );
+        if( !author.empty() )
+        {
+            text += L" | author ";
+            text += author;
+        }
         if( data.depth > 0 )
         {
-            text += L" | level ";
+            text += L" | reply level ";
             text += std::to_wstring( data.depth );
+        }
+        else
+        {
+            text += L" | thread start";
         }
         if( data.expandable )
         {
+            const auto replies = std::max<uint32_t>( 1, m_archive->GetTotalChildrenCount( data.messageIndex ) ) - 1;
+            text += L" | ";
+            text += std::to_wstring( replies );
+            text += replies == 1 ? L" reply" : L" replies";
             text += data.expanded ? L" | expanded" : L" | collapsed";
+        }
+        else
+        {
+            text += L" | no replies";
         }
         if( !data.visited )
         {
@@ -1014,16 +1069,19 @@ private:
 
     void UpdateThreadNavigator()
     {
+        SendMessageW( m_threadList, LB_RESETCONTENT, 0, 0 );
+
         const auto row = CurrentThreadRow();
         if( row < 0 )
         {
-            SetWindowTextW( m_threadList, L"No thread selected." );
+            SendMessageW( m_threadList, LB_ADDSTRING, 0, LPARAM( L"No thread selected." ) );
+            SetListBoxSelection( m_threadList, 0 );
             return;
         }
 
         const auto text = BuildThreadItemText( size_t( row ) );
-        SetWindowTextW( m_threadList, text.c_str() );
-        SendMessageW( m_threadList, EM_SETSEL, 0, 0 );
+        SendMessageW( m_threadList, LB_ADDSTRING, 0, LPARAM( text.c_str() ) );
+        SetListBoxSelection( m_threadList, 0 );
     }
 
     void RebuildThreadTree()
@@ -1651,7 +1709,7 @@ private:
     {
         UpdateThreadNavigator();
         SetFocus( m_threadList );
-        SendMessageW( m_threadList, EM_SETSEL, 0, 0 );
+        SetListBoxSelection( m_threadList, 0 );
     }
 
     void UpdateStatusText( const std::wstring& text )
