@@ -75,6 +75,10 @@ enum : int
     ID_NAV_FOCUS_LIST,
     ID_NAV_FOCUS_DETAILS,
     ID_NAV_FOCUS_BODY,
+    ID_NAV_EXPAND_THREAD,
+    ID_NAV_COLLAPSE_THREAD,
+    ID_NAV_PREVIOUS_IN_THREAD,
+    ID_NAV_NEXT_IN_THREAD,
     ID_SEARCH_FOCUS,
     ID_SEARCH_EXECUTE,
     ID_HELP_SHORTCUTS,
@@ -594,6 +598,10 @@ private:
             { FCONTROL | FVIRTKEY, 'L', ID_NAV_FOCUS_LIST },
             { FCONTROL | FVIRTKEY, 'D', ID_NAV_FOCUS_DETAILS },
             { FCONTROL | FVIRTKEY, 'B', ID_NAV_FOCUS_BODY },
+            { FCONTROL | FSHIFT | FVIRTKEY, VK_RIGHT, ID_NAV_EXPAND_THREAD },
+            { FCONTROL | FSHIFT | FVIRTKEY, VK_LEFT, ID_NAV_COLLAPSE_THREAD },
+            { FALT | FVIRTKEY, VK_UP, ID_NAV_PREVIOUS_IN_THREAD },
+            { FALT | FVIRTKEY, VK_DOWN, ID_NAV_NEXT_IN_THREAD },
             { FCONTROL | FVIRTKEY, 'H', ID_VIEW_TOGGLE_HEADERS },
         };
         return CreateAcceleratorTableW( const_cast<LPACCEL>( entries ), int( sizeof( entries ) / sizeof( *entries ) ) );
@@ -621,6 +629,11 @@ private:
         AppendMenuW( navMenu, MF_STRING, ID_NAV_FOCUS_LIST, L"Focus &List\tCtrl+L" );
         AppendMenuW( navMenu, MF_STRING, ID_NAV_FOCUS_DETAILS, L"Focus &Summary\tCtrl+D" );
         AppendMenuW( navMenu, MF_STRING, ID_NAV_FOCUS_BODY, L"Focus &Body\tCtrl+B" );
+        AppendMenuW( navMenu, MF_SEPARATOR, 0, nullptr );
+        AppendMenuW( navMenu, MF_STRING, ID_NAV_EXPAND_THREAD, L"Expand Current Thread\tCtrl+Shift+Right" );
+        AppendMenuW( navMenu, MF_STRING, ID_NAV_COLLAPSE_THREAD, L"Collapse Current Thread\tCtrl+Shift+Left" );
+        AppendMenuW( navMenu, MF_STRING, ID_NAV_PREVIOUS_IN_THREAD, L"Previous Article In Thread\tAlt+Up" );
+        AppendMenuW( navMenu, MF_STRING, ID_NAV_NEXT_IN_THREAD, L"Next Article In Thread\tAlt+Down" );
         AppendMenuW( menu, MF_POPUP, UINT_PTR( navMenu ), L"&Navigate" );
 
         HMENU helpMenu = CreatePopupMenu();
@@ -1008,6 +1021,14 @@ private:
         case ID_NAV_FOCUS_BODY:
             SetFocus( m_bodyEdit );
             return true;
+        case ID_NAV_EXPAND_THREAD:
+            return ExpandCurrentThreadRecursively();
+        case ID_NAV_COLLAPSE_THREAD:
+            return CollapseCurrentThreadToRoot();
+        case ID_NAV_PREVIOUS_IN_THREAD:
+            return NavigateRelativeInThread( -1 );
+        case ID_NAV_NEXT_IN_THREAD:
+            return NavigateRelativeInThread( 1 );
         case ID_SEARCH_FOCUS:
             SetActiveTab( TabSearch, false );
             SetFocus( m_searchEdit );
@@ -1110,6 +1131,18 @@ private:
         return m_threadModel.MessageAt( size_t( row ) );
     }
 
+    uint32_t GetThreadRoot( uint32_t message ) const
+    {
+        if( !m_archive || message == InvalidMessage || message >= m_archive->NumberOfMessages() ) return InvalidMessage;
+
+        auto root = message;
+        while( m_archive->GetParent( root ) != -1 )
+        {
+            root = uint32_t( m_archive->GetParent( root ) );
+        }
+        return root;
+    }
+
     int CurrentThreadRow() const
     {
         if( m_selectedMessage != InvalidMessage )
@@ -1202,6 +1235,16 @@ private:
         return true;
     }
 
+    bool ExpandCurrentThreadRecursively()
+    {
+        const auto root = GetThreadRoot( m_selectedMessage );
+        if( root == InvalidMessage ) return false;
+
+        ExpandThreadSubtree( root );
+        SelectThreadMessage( m_selectedMessage == InvalidMessage ? root : m_selectedMessage, false );
+        return true;
+    }
+
     bool CollapseThreadItem( uint32_t message )
     {
         if( !m_threadModel.IsExpanded( message ) ) return false;
@@ -1221,6 +1264,21 @@ private:
         SendMessageW( m_threadList, WM_SETREDRAW, TRUE, 0 );
         InvalidateRect( m_threadList, nullptr, TRUE );
         m_ignoreThreadSelection = false;
+        return true;
+    }
+
+    bool CollapseCurrentThreadToRoot()
+    {
+        const auto root = GetThreadRoot( m_selectedMessage );
+        if( root == InvalidMessage ) return false;
+
+        if( !CollapseThreadItem( root ) )
+        {
+            SelectThreadMessage( root, false );
+            return false;
+        }
+
+        SelectThreadMessage( root, false );
         return true;
     }
 
@@ -1283,6 +1341,22 @@ private:
         SetListBoxSelection( m_threadList, row );
         m_ignoreThreadSelection = false;
         DisplayMessage( message, true );
+    }
+
+    bool NavigateRelativeInThread( int delta )
+    {
+        if( !m_archive || m_selectedMessage == InvalidMessage || delta == 0 ) return false;
+
+        const auto root = GetThreadRoot( m_selectedMessage );
+        if( root == InvalidMessage ) return false;
+
+        const auto start = int64_t( root );
+        const auto end = start + int64_t( m_archive->GetTotalChildrenCount( root ) );
+        const auto target = int64_t( m_selectedMessage ) + delta;
+        if( target < start || target >= end ) return false;
+
+        SelectThreadMessage( uint32_t( target ), false );
+        return true;
     }
 
     void HandleSearchSelectionChanged( const NMLISTVIEW* info )
@@ -1535,6 +1609,8 @@ private:
             L"Ctrl+F  Focus search box\n"
             L"F5  Run search\n"
             L"Ctrl+L / Ctrl+D / Ctrl+B  Focus thread list, summary, or message body\n"
+            L"Ctrl+Shift+Right / Ctrl+Shift+Left  Expand whole thread or collapse to thread root\n"
+            L"Alt+Up / Alt+Down  Previous or next article in the current thread\n"
             L"Ctrl+H  Toggle full raw headers in the body pane\n"
             L"Right Arrow  Expand selected thread item or move to first reply\n"
             L"Ctrl+Right Arrow  Expand selected subtree recursively\n"
