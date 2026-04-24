@@ -685,7 +685,7 @@ private:
         SetWindowSubclass( m_browsePanel, &ForwardPanelMessagesSubclassProc, 0, 0 );
         SetWindowSubclass( m_searchPanel, &ForwardPanelMessagesSubclassProc, 0, 0 );
 
-        m_threadListLabel = CreateWindowExW( 0, L"STATIC", L"Current thread", WS_CHILD | WS_VISIBLE, 0, 0, 100, 24, m_browsePanel, reinterpret_cast<HMENU>( IDC_THREAD_LIST_LABEL ), m_instance, nullptr );
+        m_threadListLabel = CreateWindowExW( 0, L"STATIC", L"Thread list", WS_CHILD | WS_VISIBLE, 0, 0, 100, 24, m_browsePanel, reinterpret_cast<HMENU>( IDC_THREAD_LIST_LABEL ), m_instance, nullptr );
         m_threadList = CreateWindowExW(
             WS_EX_CLIENTEDGE,
             L"LISTBOX",
