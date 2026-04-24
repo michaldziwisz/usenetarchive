@@ -269,50 +269,6 @@ int GetSingleSelectedRow( HWND list )
     return ListView_GetNextItem( list, -1, LVNI_SELECTED );
 }
 
-void EnsureListBoxVisible( HWND list, int row )
-{
-    if( row < 0 ) return;
-
-    const auto top = int( SendMessageW( list, LB_GETTOPINDEX, 0, 0 ) );
-    RECT rect = {};
-    GetClientRect( list, &rect );
-
-    const auto itemHeight = std::max<int>( 1, int( SendMessageW( list, LB_GETITEMHEIGHT, 0, 0 ) ) );
-    const auto visibleCount = std::max<int>( 1, ( rect.bottom - rect.top ) / itemHeight );
-
-    if( row < top )
-    {
-        SendMessageW( list, LB_SETTOPINDEX, row, 0 );
-    }
-    else if( row >= top + visibleCount )
-    {
-        SendMessageW( list, LB_SETTOPINDEX, row - visibleCount + 1, 0 );
-    }
-}
-
-void NotifyListBoxAccessibilityFocus( HWND list, int row )
-{
-    if( row < 0 ) return;
-    NotifyWinEvent( EVENT_OBJECT_FOCUS, list, OBJID_CLIENT, LONG( row + 1 ) );
-}
-
-void SetListBoxSelection( HWND list, int row, bool announce = true )
-{
-    SendMessageW( list, LB_SETCURSEL, row, 0 );
-    SendMessageW( list, LB_SETCARETINDEX, row, FALSE );
-    EnsureListBoxVisible( list, row );
-    if( announce && GetFocus() == list )
-    {
-        NotifyListBoxAccessibilityFocus( list, row );
-    }
-}
-
-int GetListBoxSelection( HWND list )
-{
-    const auto row = int( SendMessageW( list, LB_GETCURSEL, 0, 0 ) );
-    return row == LB_ERR ? -1 : row;
-}
-
 bool MoveFocusToNextDialogItem( HWND hwnd, bool previous )
 {
     const auto root = GetAncestor( hwnd, GA_ROOT );
@@ -390,28 +346,21 @@ LRESULT CALLBACK EscapeKeySubclassProc( HWND hwnd, UINT msg, WPARAM wParam, LPAR
     return DefSubclassProc( hwnd, msg, wParam, lParam );
 }
 
-LRESULT CALLBACK ThreadListBoxSubclassProc( HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam, UINT_PTR, DWORD_PTR )
+LRESULT CALLBACK ThreadNavigatorSubclassProc( HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam, UINT_PTR, DWORD_PTR )
 {
     switch( msg )
     {
     case WM_GETDLGCODE:
-        if( wParam == VK_LEFT || wParam == VK_RIGHT || wParam == VK_MULTIPLY || wParam == VK_RETURN )
+        if( wParam == VK_LEFT || wParam == VK_RIGHT || wParam == VK_UP || wParam == VK_DOWN || wParam == VK_HOME || wParam == VK_END || wParam == VK_PRIOR || wParam == VK_NEXT || wParam == VK_MULTIPLY || wParam == VK_RETURN )
         {
             return DefSubclassProc( hwnd, msg, wParam, lParam ) | DLGC_WANTMESSAGE;
         }
         break;
     case WM_SETFOCUS:
-        if( const auto row = GetListBoxSelection( hwnd ); row >= 0 )
-        {
-            SetListBoxSelection( hwnd, row );
-        }
-        if( const auto root = GetAncestor( hwnd, GA_ROOT ) )
-        {
-            PostMessageW( root, WM_APP_SYNC_THREAD_PREVIEW, 0, 0 );
-        }
+        SendMessageW( hwnd, EM_SETSEL, 0, 0 );
         break;
     case WM_KEYDOWN:
-        if( wParam == VK_LEFT || wParam == VK_RIGHT || wParam == VK_MULTIPLY || wParam == VK_RETURN )
+        if( wParam == VK_LEFT || wParam == VK_RIGHT || wParam == VK_UP || wParam == VK_DOWN || wParam == VK_HOME || wParam == VK_END || wParam == VK_PRIOR || wParam == VK_NEXT || wParam == VK_MULTIPLY || wParam == VK_RETURN )
         {
             if( const auto root = GetAncestor( hwnd, GA_ROOT ) )
             {
@@ -676,9 +625,9 @@ private:
 
         m_threadList = CreateWindowExW(
             WS_EX_CLIENTEDGE,
-            L"LISTBOX",
-            L"Thread list",
-            WS_CHILD | WS_VISIBLE | WS_TABSTOP | WS_VSCROLL | LBS_NOTIFY | LBS_NOINTEGRALHEIGHT,
+            L"EDIT",
+            L"",
+            WS_CHILD | WS_VISIBLE | WS_TABSTOP | ES_AUTOHSCROLL,
             0,
             0,
             100,
@@ -688,8 +637,9 @@ private:
             m_instance,
             nullptr
         );
+        SendMessageW( m_threadList, EM_SETREADONLY, TRUE, 0 );
         SetWindowSubclass( m_threadList, &EscapeKeySubclassProc, 0, 0 );
-        SetWindowSubclass( m_threadList, &ThreadListBoxSubclassProc, 0, 0 );
+        SetWindowSubclass( m_threadList, &ThreadNavigatorSubclassProc, 0, 0 );
 
         m_searchLabel = CreateWindowExW( 0, L"STATIC", L"Search query:", WS_CHILD | WS_VISIBLE, 0, 0, 100, 24, m_searchPanel, reinterpret_cast<HMENU>( IDC_SEARCH_LABEL ), m_instance, nullptr );
         m_searchEdit = CreateWindowExW( WS_EX_CLIENTEDGE, L"EDIT", L"", WS_CHILD | WS_VISIBLE | WS_TABSTOP | ES_AUTOHSCROLL, 0, 0, 100, 24, m_searchPanel, reinterpret_cast<HMENU>( IDC_SEARCH_EDIT ), m_instance, nullptr );
@@ -915,21 +865,6 @@ private:
             return true;
         }
 
-        if( control == m_threadList )
-        {
-            switch( code )
-            {
-            case LBN_SELCHANGE:
-                HandleThreadSelectionChanged( GetListBoxSelection( m_threadList ) );
-                return true;
-            case LBN_DBLCLK:
-                SetFocus( m_bodyEdit );
-                return true;
-            default:
-                break;
-            }
-        }
-
         const auto focus = GetFocus();
 
         switch( id )
@@ -1044,15 +979,19 @@ private:
         auto subject = Utf8ToWide( m_archive->GetSubject( data.messageIndex ) );
         if( subject.empty() ) subject = L"(no subject)";
 
-        std::wstring text( size_t( std::max( data.depth, 0 ) ) * 2, L' ' );
-        text += subject;
+        std::wstring text = std::move( subject );
+        if( data.depth > 0 )
+        {
+            text += L" | level ";
+            text += std::to_wstring( data.depth );
+        }
         if( data.expandable )
         {
-            text += data.expanded ? L" [expanded]" : L" [collapsed]";
+            text += data.expanded ? L" | expanded" : L" | collapsed";
         }
         if( !data.visited )
         {
-            text += L" [unread]";
+            text += L" | unread";
         }
         return text;
     }
@@ -1063,54 +1002,33 @@ private:
         return m_threadModel.MessageAt( size_t( row ) );
     }
 
-    void UpdateThreadRow( int row )
+    int CurrentThreadRow() const
     {
-        const auto message = GetThreadMessage( row );
-        if( message == InvalidMessage ) return;
+        if( m_selectedMessage != InvalidMessage )
+        {
+            const auto row = m_threadModel.VisibleRowOf( m_selectedMessage );
+            if( row >= 0 ) return row;
+        }
+        return m_threadModel.VisibleCount() == 0 ? -1 : 0;
+    }
+
+    void UpdateThreadNavigator()
+    {
+        const auto row = CurrentThreadRow();
+        if( row < 0 )
+        {
+            SetWindowTextW( m_threadList, L"No thread selected." );
+            return;
+        }
 
         const auto text = BuildThreadItemText( size_t( row ) );
-        const auto selectedRow = GetListBoxSelection( m_threadList );
-        const auto topIndex = int( SendMessageW( m_threadList, LB_GETTOPINDEX, 0, 0 ) );
-
-        if( int( SendMessageW( m_threadList, LB_GETCOUNT, 0, 0 ) ) <= row )
-        {
-            const auto inserted = int( SendMessageW( m_threadList, LB_INSERTSTRING, row, LPARAM( text.c_str() ) ) );
-            SendMessageW( m_threadList, LB_SETITEMDATA, inserted, LPARAM( message ) );
-        }
-        else
-        {
-            SendMessageW( m_threadList, LB_DELETESTRING, row, 0 );
-            const auto inserted = int( SendMessageW( m_threadList, LB_INSERTSTRING, row, LPARAM( text.c_str() ) ) );
-            SendMessageW( m_threadList, LB_SETITEMDATA, inserted, LPARAM( message ) );
-        }
-
-        if( selectedRow == row )
-        {
-            SendMessageW( m_threadList, LB_SETCURSEL, row, 0 );
-        }
-        if( topIndex != LB_ERR )
-        {
-            SendMessageW( m_threadList, LB_SETTOPINDEX, topIndex, 0 );
-        }
+        SetWindowTextW( m_threadList, text.c_str() );
+        SendMessageW( m_threadList, EM_SETSEL, 0, 0 );
     }
 
     void RebuildThreadTree()
     {
-        SendMessageW( m_threadList, WM_SETREDRAW, FALSE, 0 );
-        SendMessageW( m_threadList, LB_RESETCONTENT, 0, 0 );
-        if( !m_archive )
-        {
-            SendMessageW( m_threadList, WM_SETREDRAW, TRUE, 0 );
-            InvalidateRect( m_threadList, nullptr, TRUE );
-            return;
-        }
-
-        for( size_t row=0; row<m_threadModel.VisibleCount(); row++ )
-        {
-            UpdateThreadRow( int( row ) );
-        }
-        SendMessageW( m_threadList, WM_SETREDRAW, TRUE, 0 );
-        InvalidateRect( m_threadList, nullptr, TRUE );
+        UpdateThreadNavigator();
     }
 
     void EnsureThreadPathVisible( uint32_t message )
@@ -1138,11 +1056,7 @@ private:
             RebuildThreadTree();
         }
 
-        const auto row = m_threadModel.VisibleRowOf( message );
-        if( row >= 0 )
-        {
-            EnsureListBoxVisible( m_threadList, row );
-        }
+        UpdateThreadNavigator();
     }
 
     void ExpandThreadSubtree( uint32_t message )
@@ -1156,10 +1070,9 @@ private:
 
     void RefreshThreadItemText( uint32_t message )
     {
-        const auto row = m_threadModel.VisibleRowOf( message );
-        if( row >= 0 )
+        if( message == m_selectedMessage )
         {
-            UpdateThreadRow( row );
+            UpdateThreadNavigator();
         }
     }
 
@@ -1170,21 +1083,10 @@ private:
 
     void SyncSelectedThreadPreview()
     {
-        if( m_ignoreThreadSelection ) return;
-
-        const auto row = GetListBoxSelection( m_threadList );
-        const auto message = GetThreadMessage( row );
-        if( message == InvalidMessage || message == m_selectedMessage ) return;
-
-        DisplayMessage( message, true );
-    }
-
-    void HandleThreadSelectionChanged( int row )
-    {
-        if( m_ignoreThreadSelection ) return;
-        const auto message = GetThreadMessage( row );
-        if( message == InvalidMessage ) return;
-        if( message != m_selectedMessage ) DisplayMessage( message, true );
+        if( m_selectedMessage == InvalidMessage && m_threadModel.VisibleCount() != 0 )
+        {
+            DisplayMessage( GetThreadMessage( 0 ), true );
+        }
     }
 
     void HandleSearchSelectionChanged( const NMLISTVIEW* info )
@@ -1200,12 +1102,60 @@ private:
 
     bool HandleThreadKeyDown( UINT key, bool ctrlDown )
     {
-        const auto row = GetListBoxSelection( m_threadList );
+        const auto row = CurrentThreadRow();
         const auto message = GetThreadMessage( row );
         if( message == InvalidMessage ) return false;
 
         switch( key )
         {
+        case VK_UP:
+            if( row > 0 )
+            {
+                SelectThreadMessage( GetThreadMessage( row - 1 ), false );
+                return true;
+            }
+            break;
+        case VK_DOWN:
+            if( row + 1 < int( m_threadModel.VisibleCount() ) )
+            {
+                SelectThreadMessage( GetThreadMessage( row + 1 ), false );
+                return true;
+            }
+            break;
+        case VK_HOME:
+            if( m_threadModel.VisibleCount() != 0 )
+            {
+                SelectThreadMessage( GetThreadMessage( 0 ), false );
+                return true;
+            }
+            break;
+        case VK_END:
+            if( m_threadModel.VisibleCount() != 0 )
+            {
+                SelectThreadMessage( GetThreadMessage( int( m_threadModel.VisibleCount() - 1 ) ), false );
+                return true;
+            }
+            break;
+        case VK_PRIOR:
+        {
+            const auto target = std::max( 0, row - 20 );
+            if( target != row )
+            {
+                SelectThreadMessage( GetThreadMessage( target ), false );
+                return true;
+            }
+            break;
+        }
+        case VK_NEXT:
+        {
+            const auto target = std::min<int>( int( m_threadModel.VisibleCount() ) - 1, row + 20 );
+            if( target != row )
+            {
+                SelectThreadMessage( GetThreadMessage( target ), false );
+                return true;
+            }
+            break;
+        }
         case VK_RIGHT:
             if( ctrlDown )
             {
@@ -1228,10 +1178,7 @@ private:
                     const auto child = GetThreadMessage( row + 1 );
                     if( child != InvalidMessage && m_archive->GetParent( child ) == int32_t( message ) )
                     {
-                        m_ignoreThreadSelection = true;
-                        SetListBoxSelection( m_threadList, row + 1 );
-                        m_ignoreThreadSelection = false;
-                        DisplayMessage( child, true );
+                        SelectThreadMessage( child, false );
                     }
                 }
                 return true;
@@ -1256,14 +1203,6 @@ private:
             }
             break;
         }
-        case VK_UP:
-        case VK_DOWN:
-        case VK_HOME:
-        case VK_END:
-        case VK_PRIOR:
-        case VK_NEXT:
-            PostSyncThreadPreview();
-            break;
         case VK_MULTIPLY:
             ExpandThreadSubtree( message );
             SelectThreadMessage( message, false );
@@ -1505,11 +1444,8 @@ private:
         const auto row = m_threadModel.VisibleRowOf( message );
         if( row < 0 ) return;
 
-        m_ignoreThreadSelection = true;
-        SetListBoxSelection( m_threadList, row );
-        m_ignoreThreadSelection = false;
-
         DisplayMessage( message, true );
+        UpdateThreadNavigator();
         if( focus ) FocusThreadList();
     }
 
@@ -1713,20 +1649,9 @@ private:
 
     void FocusThreadList()
     {
-        auto row = m_selectedMessage != InvalidMessage ? m_threadModel.VisibleRowOf( m_selectedMessage ) : -1;
-        if( row < 0 )
-        {
-            row = GetListBoxSelection( m_threadList );
-        }
-
-        if( row >= 0 )
-        {
-            m_ignoreThreadSelection = true;
-            SetListBoxSelection( m_threadList, row );
-            m_ignoreThreadSelection = false;
-        }
-
+        UpdateThreadNavigator();
         SetFocus( m_threadList );
+        SendMessageW( m_threadList, EM_SETSEL, 0, 0 );
     }
 
     void UpdateStatusText( const std::wstring& text )
