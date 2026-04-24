@@ -229,17 +229,6 @@ std::wstring PairToWideString( const std::pair<const char*, uint64_t>& value )
     return Utf8ToWide( std::string( value.first, value.second ) );
 }
 
-UINT MapTreeItemToAccessibilityId( HWND hwnd, HTREEITEM item )
-{
-#ifdef TVM_MAPHTREEITEMTOACCID
-    return item ? UINT( SendMessageW( hwnd, TVM_MAPHTREEITEMTOACCID, WPARAM( item ), 0 ) ) : 0;
-#else
-    (void)hwnd;
-    (void)item;
-    return 0;
-#endif
-}
-
 void AlignTreeItemForFocus( HWND hwnd, HTREEITEM item )
 {
     if( !item ) return;
@@ -251,23 +240,9 @@ void AlignTreeItemForFocus( HWND hwnd, HTREEITEM item )
     UpdateWindow( hwnd );
 }
 
-void NotifyTreeItemAccessibilityFocus( HWND hwnd, HTREEITEM item )
-{
-    if( !item ) return;
-
-    const auto accId = MapTreeItemToAccessibilityId( hwnd, item );
-    if( accId != 0 )
-    {
-        NotifyWinEvent( EVENT_OBJECT_SELECTION, hwnd, OBJID_CLIENT, LONG( accId ) );
-        NotifyWinEvent( EVENT_OBJECT_SELECTIONWITHIN, hwnd, OBJID_CLIENT, CHILDID_SELF );
-        NotifyWinEvent( EVENT_OBJECT_FOCUS, hwnd, OBJID_CLIENT, LONG( accId ) );
-    }
-}
-
 void ReassertTreeItemFocus( HWND hwnd, HTREEITEM item )
 {
     AlignTreeItemForFocus( hwnd, item );
-    NotifyTreeItemAccessibilityFocus( hwnd, item );
 }
 
 bool StartsWithCaseInsensitive( const std::wstring& text, const wchar_t* prefix )
@@ -1782,10 +1757,10 @@ private:
 
     void FocusThreadList()
     {
-        auto item = TreeView_GetSelection( m_threadList );
-        if( !item && m_selectedMessage != InvalidMessage )
+        auto item = m_selectedMessage != InvalidMessage ? ThreadItemForMessage( m_selectedMessage ) : nullptr;
+        if( !item )
         {
-            item = ThreadItemForMessage( m_selectedMessage );
+            item = TreeView_GetSelection( m_threadList );
         }
 
         if( item )
