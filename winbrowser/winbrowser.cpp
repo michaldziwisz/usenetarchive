@@ -563,8 +563,11 @@ private:
         case WM_APP_OPEN_BODY_LINK:
             return TryOpenFocusedBodyLink() ? 1 : 0;
         case WM_CONTEXTMENU:
-            if( HandleContextMenu( reinterpret_cast<HWND>( wParam ), { GET_X_LPARAM( lParam ), GET_Y_LPARAM( lParam ) } ) ) return 0;
+        {
+            POINT screenPoint = { short( LOWORD( lParam ) ), short( HIWORD( lParam ) ) };
+            if( HandleContextMenu( reinterpret_cast<HWND>( wParam ), screenPoint ) ) return 0;
             break;
+        }
         case WM_SETFOCUS:
             if( m_lastFocusedControl && IsWindow( m_lastFocusedControl ) && IsWindowVisible( m_lastFocusedControl ) && IsWindowEnabled( m_lastFocusedControl ) )
             {
