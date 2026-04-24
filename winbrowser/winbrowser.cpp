@@ -50,6 +50,7 @@ enum : int
     IDC_MAIN_TAB = 100,
     IDC_BROWSE_PANEL,
     IDC_SEARCH_PANEL,
+    IDC_THREAD_LIST_LABEL,
     IDC_THREAD_LIST,
     IDC_SEARCH_LABEL,
     IDC_SEARCH_EDIT,
@@ -642,6 +643,7 @@ private:
         SetWindowSubclass( m_browsePanel, &ForwardPanelMessagesSubclassProc, 0, 0 );
         SetWindowSubclass( m_searchPanel, &ForwardPanelMessagesSubclassProc, 0, 0 );
 
+        m_threadListLabel = CreateWindowExW( 0, L"STATIC", L"Current thread", WS_CHILD | WS_VISIBLE, 0, 0, 100, 24, m_browsePanel, reinterpret_cast<HMENU>( IDC_THREAD_LIST_LABEL ), m_instance, nullptr );
         m_threadList = CreateWindowExW(
             WS_EX_CLIENTEDGE,
             L"LISTBOX",
@@ -735,7 +737,7 @@ private:
         );
 
         const HWND controls[] = {
-            m_browsePanel, m_searchPanel, m_threadList, m_searchLabel, m_searchEdit, m_searchButton, m_searchHint,
+            m_browsePanel, m_searchPanel, m_threadListLabel, m_threadList, m_searchLabel, m_searchEdit, m_searchButton, m_searchHint,
             m_resultsList, m_detailsLabel, m_detailsEdit, m_bodyLabel, m_bodyEdit, m_status
         };
         for( auto wnd : controls )
@@ -834,7 +836,10 @@ private:
 
         RECT panel = {};
         GetClientRect( m_browsePanel, &panel );
-        SetWindowPos( m_threadList, nullptr, 0, 0, int( panel.right ), int( panel.bottom ), SWP_NOZORDER );
+        const int threadLabelHeight = Scale( 20 );
+        const int threadGap = Scale( 6 );
+        SetWindowPos( m_threadListLabel, nullptr, 0, 0, int( panel.right ), threadLabelHeight, SWP_NOZORDER );
+        SetWindowPos( m_threadList, nullptr, 0, threadLabelHeight + threadGap, int( panel.right ), std::max( 0, int( panel.bottom ) - threadLabelHeight - threadGap ), SWP_NOZORDER );
 
         RECT searchPanel = {};
         GetClientRect( m_searchPanel, &searchPanel );
@@ -1741,6 +1746,7 @@ private:
     HWND m_tab = nullptr;
     HWND m_browsePanel = nullptr;
     HWND m_searchPanel = nullptr;
+    HWND m_threadListLabel = nullptr;
     HWND m_threadList = nullptr;
     HWND m_searchLabel = nullptr;
     HWND m_searchEdit = nullptr;
