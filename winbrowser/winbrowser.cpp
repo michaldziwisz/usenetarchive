@@ -240,7 +240,7 @@ UINT MapTreeItemToAccessibilityId( HWND hwnd, HTREEITEM item )
 #endif
 }
 
-void ReassertTreeItemFocus( HWND hwnd, HTREEITEM item )
+void AlignTreeItemForFocus( HWND hwnd, HTREEITEM item )
 {
     if( !item ) return;
 
@@ -248,12 +248,26 @@ void ReassertTreeItemFocus( HWND hwnd, HTREEITEM item )
     TreeView_Select( hwnd, item, TVGN_CARET );
     TreeView_Select( hwnd, item, TVGN_FIRSTVISIBLE );
     TreeView_EnsureVisible( hwnd, item );
+    UpdateWindow( hwnd );
+}
+
+void NotifyTreeItemAccessibilityFocus( HWND hwnd, HTREEITEM item )
+{
+    if( !item ) return;
 
     const auto accId = MapTreeItemToAccessibilityId( hwnd, item );
     if( accId != 0 )
     {
+        NotifyWinEvent( EVENT_OBJECT_SELECTION, hwnd, OBJID_CLIENT, LONG( accId ) );
+        NotifyWinEvent( EVENT_OBJECT_SELECTIONWITHIN, hwnd, OBJID_CLIENT, CHILDID_SELF );
         NotifyWinEvent( EVENT_OBJECT_FOCUS, hwnd, OBJID_CLIENT, LONG( accId ) );
     }
+}
+
+void ReassertTreeItemFocus( HWND hwnd, HTREEITEM item )
+{
+    AlignTreeItemForFocus( hwnd, item );
+    NotifyTreeItemAccessibilityFocus( hwnd, item );
 }
 
 bool StartsWithCaseInsensitive( const std::wstring& text, const wchar_t* prefix )
@@ -1565,7 +1579,7 @@ private:
         m_ignoreThreadSelection = false;
 
         DisplayMessage( message, true );
-        if( focus ) SetFocus( m_threadList );
+        if( focus ) FocusThreadList();
     }
 
     void ActivateSelectedSearchResult()
@@ -1751,7 +1765,7 @@ private:
     {
         if( m_currentTab == TabBrowse )
         {
-            SetFocus( m_threadList );
+            FocusThreadList();
         }
         else
         {
@@ -1764,6 +1778,24 @@ private:
                 SetFocus( m_searchEdit );
             }
         }
+    }
+
+    void FocusThreadList()
+    {
+        auto item = TreeView_GetSelection( m_threadList );
+        if( !item && m_selectedMessage != InvalidMessage )
+        {
+            item = ThreadItemForMessage( m_selectedMessage );
+        }
+
+        if( item )
+        {
+            m_ignoreThreadSelection = true;
+            AlignTreeItemForFocus( m_threadList, item );
+            m_ignoreThreadSelection = false;
+        }
+
+        SetFocus( m_threadList );
     }
 
     void UpdateStatusText( const std::wstring& text )
