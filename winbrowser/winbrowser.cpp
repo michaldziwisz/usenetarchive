@@ -291,6 +291,7 @@ void SetListBoxSelection( HWND list, int row )
     {
         SendMessageW( list, LB_SETCURSEL, row, 0 );
     }
+    SendMessageW( list, LB_SETCARETINDEX, row, FALSE );
     EnsureListBoxVisible( list, row );
 }
 
