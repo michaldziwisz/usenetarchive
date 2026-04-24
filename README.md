@@ -9,6 +9,17 @@ Typically you will have two usage patterns:
 
 **TL;DR: Download available archive files, use tbrowser or winbrowser to read them.**
 
+## Windows Download
+
+Ready-made Windows builds of `winbrowser` are published here:
+
+- Download page: <https://michaldziwisz.github.io/winbrowser/>
+- Latest release page: <https://github.com/michaldziwisz/winbrowser/releases/latest>
+- Latest ZIP download: <https://github.com/michaldziwisz/winbrowser/releases/latest/download/winbrowser-windows-x64.zip>
+- Latest checksums: <https://github.com/michaldziwisz/winbrowser/releases/latest/download/SHA256SUMS.txt>
+
+If you only want to run the Windows GUI browser, use the links above instead of building from source.
+
 ![](doc/tbrowser1.png)
 ![](doc/tbrowser2.png)
 ![](doc/galaxy1.png)
