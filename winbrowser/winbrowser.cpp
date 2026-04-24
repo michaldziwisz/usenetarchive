@@ -290,10 +290,21 @@ void EnsureListBoxVisible( HWND list, int row )
     }
 }
 
-void SetListBoxSelection( HWND list, int row )
+void NotifyListBoxAccessibilityFocus( HWND list, int row )
+{
+    if( row < 0 ) return;
+    NotifyWinEvent( EVENT_OBJECT_FOCUS, list, OBJID_CLIENT, LONG( row + 1 ) );
+}
+
+void SetListBoxSelection( HWND list, int row, bool announce = true )
 {
     SendMessageW( list, LB_SETCURSEL, row, 0 );
+    SendMessageW( list, LB_SETCARETINDEX, row, FALSE );
     EnsureListBoxVisible( list, row );
+    if( announce && GetFocus() == list )
+    {
+        NotifyListBoxAccessibilityFocus( list, row );
+    }
 }
 
 int GetListBoxSelection( HWND list )
@@ -390,6 +401,10 @@ LRESULT CALLBACK ThreadListBoxSubclassProc( HWND hwnd, UINT msg, WPARAM wParam, 
         }
         break;
     case WM_SETFOCUS:
+        if( const auto row = GetListBoxSelection( hwnd ); row >= 0 )
+        {
+            SetListBoxSelection( hwnd, row );
+        }
         if( const auto root = GetAncestor( hwnd, GA_ROOT ) )
         {
             PostMessageW( root, WM_APP_SYNC_THREAD_PREVIEW, 0, 0 );
