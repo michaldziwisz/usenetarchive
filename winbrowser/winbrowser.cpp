@@ -84,6 +84,8 @@ enum : UINT
 {
     WM_APP_SYNC_THREAD_PREVIEW = WM_APP + 1,
     WM_APP_THREAD_LIST_KEY = WM_APP + 2,
+    WM_APP_CHILD_FOCUS = WM_APP + 3,
+    WM_APP_OPEN_BODY_LINK = WM_APP + 4,
 };
 
 std::wstring Utf8ToWide( const std::string& text )
@@ -316,6 +318,19 @@ bool HandleEscapeForControl( HWND hwnd )
     return true;
 }
 
+LRESULT CALLBACK FocusTrackingSubclassProc( HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam, UINT_PTR, DWORD_PTR )
+{
+    if( msg == WM_SETFOCUS )
+    {
+        if( const auto root = GetAncestor( hwnd, GA_ROOT ) )
+        {
+            PostMessageW( root, WM_APP_CHILD_FOCUS, WPARAM( hwnd ), 0 );
+        }
+    }
+
+    return DefSubclassProc( hwnd, msg, wParam, lParam );
+}
+
 LRESULT CALLBACK ReadOnlyPaneSubclassProc( HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam, UINT_PTR, DWORD_PTR )
 {
     switch( msg )
@@ -323,6 +338,7 @@ LRESULT CALLBACK ReadOnlyPaneSubclassProc( HWND hwnd, UINT msg, WPARAM wParam, L
     case WM_GETDLGCODE:
         if( wParam == VK_TAB ) return 0;
         if( wParam == VK_ESCAPE ) return DefSubclassProc( hwnd, msg, wParam, lParam ) | DLGC_WANTMESSAGE;
+        if( wParam == VK_RETURN && GetDlgCtrlID( hwnd ) == IDC_BODY_EDIT ) return DefSubclassProc( hwnd, msg, wParam, lParam ) | DLGC_WANTMESSAGE;
         return DefSubclassProc( hwnd, msg, wParam, lParam ) & ~DLGC_WANTTAB;
     case WM_KEYDOWN:
     case WM_CHAR:
@@ -338,6 +354,16 @@ LRESULT CALLBACK ReadOnlyPaneSubclassProc( HWND hwnd, UINT msg, WPARAM wParam, L
         {
             HandleEscapeForControl( hwnd );
             return 0;
+        }
+        if( msg == WM_KEYDOWN && wParam == VK_RETURN && GetDlgCtrlID( hwnd ) == IDC_BODY_EDIT )
+        {
+            if( const auto root = GetAncestor( hwnd, GA_ROOT ) )
+            {
+                if( SendMessageW( root, WM_APP_OPEN_BODY_LINK, 0, 0 ) != 0 )
+                {
+                    return 0;
+                }
+            }
         }
         break;
     default:
@@ -518,8 +544,23 @@ private:
         case WM_APP_THREAD_LIST_KEY:
             HandleThreadKeyDown( UINT( wParam ), lParam != 0 );
             return 0;
+        case WM_APP_CHILD_FOCUS:
+            if( IsWindow( reinterpret_cast<HWND>( wParam ) ) )
+            {
+                m_lastFocusedControl = reinterpret_cast<HWND>( wParam );
+            }
+            return 0;
+        case WM_APP_OPEN_BODY_LINK:
+            return TryOpenFocusedBodyLink() ? 1 : 0;
         case WM_SETFOCUS:
-            FocusPrimaryControl();
+            if( m_lastFocusedControl && IsWindow( m_lastFocusedControl ) && IsWindowVisible( m_lastFocusedControl ) && IsWindowEnabled( m_lastFocusedControl ) )
+            {
+                SetFocus( m_lastFocusedControl );
+            }
+            else
+            {
+                FocusPrimaryControl();
+            }
             return 0;
         case WM_CLOSE:
             PersistState();
@@ -604,6 +645,7 @@ private:
         if( !m_tab ) return false;
         SendMessageW( m_tab, WM_SETFONT, WPARAM( m_font ), TRUE );
         SetWindowSubclass( m_tab, &EscapeKeySubclassProc, 0, 0 );
+        SetWindowSubclass( m_tab, &FocusTrackingSubclassProc, 0, 0 );
 
         TCITEMW item = {};
         item.mask = TCIF_TEXT;
@@ -660,6 +702,7 @@ private:
         );
         SetWindowSubclass( m_threadList, &EscapeKeySubclassProc, 0, 0 );
         SetWindowSubclass( m_threadList, &ThreadNavigatorSubclassProc, 0, 0 );
+        SetWindowSubclass( m_threadList, &FocusTrackingSubclassProc, 0, 0 );
 
         m_searchLabel = CreateWindowExW( 0, L"STATIC", L"Search query:", WS_CHILD | WS_VISIBLE, 0, 0, 100, 24, m_searchPanel, reinterpret_cast<HMENU>( IDC_SEARCH_LABEL ), m_instance, nullptr );
         m_searchEdit = CreateWindowExW( WS_EX_CLIENTEDGE, L"EDIT", L"", WS_CHILD | WS_VISIBLE | WS_TABSTOP | ES_AUTOHSCROLL, 0, 0, 100, 24, m_searchPanel, reinterpret_cast<HMENU>( IDC_SEARCH_EDIT ), m_instance, nullptr );
@@ -682,6 +725,9 @@ private:
         SetWindowSubclass( m_searchEdit, &EscapeKeySubclassProc, 0, 0 );
         SetWindowSubclass( m_searchButton, &EscapeKeySubclassProc, 0, 0 );
         SetWindowSubclass( m_resultsList, &EscapeKeySubclassProc, 0, 0 );
+        SetWindowSubclass( m_searchEdit, &FocusTrackingSubclassProc, 0, 0 );
+        SetWindowSubclass( m_searchButton, &FocusTrackingSubclassProc, 0, 0 );
+        SetWindowSubclass( m_resultsList, &FocusTrackingSubclassProc, 0, 0 );
 
         m_detailsLabel = CreateWindowExW( 0, L"STATIC", L"Message summary", WS_CHILD | WS_VISIBLE, 0, 0, 100, 24, m_hwnd, reinterpret_cast<HMENU>( IDC_DETAILS_LABEL ), m_instance, nullptr );
         m_detailsEdit = CreateWindowExW(
@@ -700,6 +746,7 @@ private:
         );
         SendMessageW( m_detailsEdit, EM_SETREADONLY, TRUE, 0 );
         SetWindowSubclass( m_detailsEdit, &ReadOnlyPaneSubclassProc, 0, 0 );
+        SetWindowSubclass( m_detailsEdit, &FocusTrackingSubclassProc, 0, 0 );
 
         m_bodyLabel = CreateWindowExW( 0, L"STATIC", L"Message body", WS_CHILD | WS_VISIBLE, 0, 0, 100, 24, m_hwnd, reinterpret_cast<HMENU>( IDC_BODY_LABEL ), m_instance, nullptr );
         m_bodyEdit = CreateWindowExW(
@@ -720,6 +767,7 @@ private:
         SendMessageW( m_bodyEdit, EM_AUTOURLDETECT, TRUE, 0 );
         SendMessageW( m_bodyEdit, EM_SETEVENTMASK, 0, ENM_LINK );
         SetWindowSubclass( m_bodyEdit, &ReadOnlyPaneSubclassProc, 0, 0 );
+        SetWindowSubclass( m_bodyEdit, &FocusTrackingSubclassProc, 0, 0 );
 
         m_status = CreateWindowExW(
             0,
@@ -1302,9 +1350,68 @@ private:
         return false;
     }
 
+    bool TryOpenFocusedBodyLink()
+    {
+        if( !m_bodyEdit ) return false;
+
+        const auto textLength = GetWindowTextLengthW( m_bodyEdit );
+        if( textLength <= 0 ) return false;
+
+        CHARRANGE original = {};
+        SendMessageW( m_bodyEdit, EM_EXGETSEL, 0, LPARAM( &original ) );
+
+        auto restoreSelection = [&]() {
+            SendMessageW( m_bodyEdit, EM_EXSETSEL, 0, LPARAM( &original ) );
+        };
+
+        auto isLinkChar = [&]( LONG index ) {
+            if( index < 0 || index >= textLength ) return false;
+
+            CHARRANGE probe = { index, index + 1 };
+            CHARFORMAT2W format = {};
+            format.cbSize = sizeof( format );
+            SendMessageW( m_bodyEdit, EM_EXSETSEL, 0, LPARAM( &probe ) );
+            SendMessageW( m_bodyEdit, EM_GETCHARFORMAT, SCF_SELECTION, LPARAM( &format ) );
+            return ( format.dwMask & CFM_LINK ) != 0 && ( format.dwEffects & CFE_LINK ) != 0;
+        };
+
+        auto pos = std::clamp<LONG>( original.cpMin, 0, textLength - 1 );
+        if( !isLinkChar( pos ) && pos > 0 && isLinkChar( pos - 1 ) )
+        {
+            pos--;
+        }
+        if( !isLinkChar( pos ) )
+        {
+            restoreSelection();
+            return false;
+        }
+
+        LONG start = pos;
+        while( start > 0 && isLinkChar( start - 1 ) ) start--;
+
+        LONG end = pos + 1;
+        while( end < textLength && isLinkChar( end ) ) end++;
+
+        restoreSelection();
+
+        TEXTRANGEW range = {};
+        std::vector<wchar_t> text( end - start + 1 );
+        range.chrg.cpMin = start;
+        range.chrg.cpMax = end;
+        range.lpstrText = text.data();
+        SendMessageW( m_bodyEdit, EM_GETTEXTRANGE, 0, LPARAM( &range ) );
+
+        std::wstring target( text.data() );
+        if( target.empty() ) return false;
+        if( TryOpenInternalNewsLink( target ) ) return true;
+
+        ShellExecuteW( m_hwnd, L"open", target.c_str(), nullptr, nullptr, SW_SHOWNORMAL );
+        return true;
+    }
+
     void HandleBodyLink( const ENLINK* link )
     {
-        if( link->msg == WM_KEYUP )
+        if( link->msg == WM_KEYDOWN || link->msg == WM_KEYUP )
         {
             if( link->wParam != VK_RETURN && link->wParam != VK_SPACE ) return;
         }
@@ -1776,6 +1883,7 @@ private:
     HWND m_bodyLabel = nullptr;
     HWND m_bodyEdit = nullptr;
     HWND m_status = nullptr;
+    HWND m_lastFocusedControl = nullptr;
     HFONT m_font = nullptr;
     HACCEL m_accel = nullptr;
 
