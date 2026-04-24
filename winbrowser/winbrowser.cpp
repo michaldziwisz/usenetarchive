@@ -18,15 +18,21 @@
 #endif
 
 #include <algorithm>
+#include <cstdio>
 #include <cwctype>
+#include <functional>
 #include <memory>
 #include <string>
 #include <time.h>
 #include <utility>
 #include <vector>
 
+#include "../common/FileMap.hpp"
+#include "../common/Filesystem.hpp"
+#include "../common/Package.hpp"
 #include "../common/ExpandingBuffer.hpp"
 #include "../common/String.hpp"
+#include "../contrib/martinus/robin_hood.h"
 #include "../libuat/Archive.hpp"
 #include "../libuat/Galaxy.hpp"
 #include "../libuat/PersistentStorage.hpp"
@@ -81,6 +87,12 @@ enum : int
     ID_NAV_NEXT_IN_THREAD,
     ID_SEARCH_FOCUS,
     ID_SEARCH_EXECUTE,
+    ID_TOOLS_VERIFY_ARCHIVE,
+    ID_TOOLS_PACK_ARCHIVE,
+    ID_TOOLS_UNPACK_ARCHIVE,
+    ID_TOOLS_EXPORT_MESSAGE,
+    ID_TOOLS_EXPORT_THREAD,
+    ID_TOOLS_EXPORT_SEARCH_RESULTS,
     ID_HELP_SHORTCUTS,
 };
 
@@ -90,6 +102,19 @@ enum : UINT
     WM_APP_THREAD_LIST_KEY = WM_APP + 2,
     WM_APP_CHILD_FOCUS = WM_APP + 3,
     WM_APP_OPEN_BODY_LINK = WM_APP + 4,
+};
+
+enum class VerifyState
+{
+    Ok,
+    Fail,
+    Info
+};
+
+struct VerifyLine
+{
+    VerifyState state;
+    std::wstring text;
 };
 
 std::wstring Utf8ToWide( const std::string& text )
@@ -137,6 +162,122 @@ std::string NormalizeLineEndings( const std::string& text )
     }
     return ret;
 }
+
+std::string NormalizePathSeparators( std::string path )
+{
+    for( auto& ch : path )
+    {
+        if( ch == '\\' ) ch = '/';
+    }
+    return path;
+}
+
+std::string JoinPath( const std::string& base, const char* name )
+{
+    if( base.empty() ) return name ? std::string( name ) : std::string();
+    if( !name || *name == '\0' ) return base;
+    if( base.back() == '/' || base.back() == '\\' ) return base + name;
+    return base + "/" + name;
+}
+
+std::wstring JoinPath( const std::wstring& base, const std::wstring& name )
+{
+    if( base.empty() ) return name;
+    if( name.empty() ) return base;
+    if( base.back() == L'/' || base.back() == L'\\' ) return base + name;
+    return base + L'\\' + name;
+}
+
+bool IsDirectoryPath( const std::string& path )
+{
+    struct stat64 buf;
+    return stat64( path.c_str(), &buf ) == 0 && !S_ISREG( buf.st_mode );
+}
+
+std::wstring SanitizeFilenamePart( std::wstring text )
+{
+    for( auto& ch : text )
+    {
+        if( ch < 32 || ch == L'<' || ch == L'>' || ch == L':' || ch == L'"' || ch == L'/' || ch == L'\\' || ch == L'|' || ch == L'?' || ch == L'*' )
+        {
+            ch = L'_';
+        }
+    }
+
+    while( !text.empty() && ( text.back() == L'.' || text.back() == L' ' ) )
+    {
+        text.pop_back();
+    }
+
+    size_t write = 0;
+    bool previousSpace = false;
+    for( size_t i=0; i<text.size(); i++ )
+    {
+        const auto ch = text[i];
+        const auto space = ch == L' ' || ch == L'\t';
+        if( space )
+        {
+            if( previousSpace ) continue;
+            previousSpace = true;
+            text[write++] = L' ';
+        }
+        else
+        {
+            previousSpace = false;
+            text[write++] = ch;
+        }
+    }
+    text.resize( write );
+
+    while( !text.empty() && text.front() == L' ' )
+    {
+        text.erase( text.begin() );
+    }
+    while( !text.empty() && text.back() == L' ' )
+    {
+        text.pop_back();
+    }
+
+    if( text.size() > 96 )
+    {
+        text.resize( 96 );
+        while( !text.empty() && ( text.back() == L'.' || text.back() == L' ' ) )
+        {
+            text.pop_back();
+        }
+    }
+
+    if( text.empty() ) text = L"message";
+    return text;
+}
+
+std::wstring VerifyStatePrefix( VerifyState state )
+{
+    switch( state )
+    {
+    case VerifyState::Ok: return L"[OK] ";
+    case VerifyState::Fail: return L"[FAIL] ";
+    case VerifyState::Info: return L"[INFO] ";
+    }
+    return L"";
+}
+
+class ScopedWaitCursor
+{
+public:
+    ScopedWaitCursor()
+        : m_previous( SetCursor( LoadCursorW( nullptr, IDC_WAIT ) ) )
+    {
+    }
+
+    ~ScopedWaitCursor()
+    {
+        SetCursor( m_previous );
+    }
+
+private:
+    HCURSOR m_previous = nullptr;
+};
 
 std::wstring WideWithWindowsLineEndings( const std::string& text )
 {
@@ -656,6 +797,17 @@ private:
         AppendMenuW( navMenu, MF_STRING, ID_NAV_NEXT_IN_THREAD, L"Next Article In Thread\tAlt+Down" );
         AppendMenuW( menu, MF_POPUP, UINT_PTR( navMenu ), L"&Navigate" );
 
+        HMENU toolsMenu = CreatePopupMenu();
+        AppendMenuW( toolsMenu, MF_STRING, ID_TOOLS_VERIFY_ARCHIVE, L"&Verify Current Archive..." );
+        AppendMenuW( toolsMenu, MF_SEPARATOR, 0, nullptr );
+        AppendMenuW( toolsMenu, MF_STRING, ID_TOOLS_PACK_ARCHIVE, L"&Pack Archive Folder..." );
+        AppendMenuW( toolsMenu, MF_STRING, ID_TOOLS_UNPACK_ARCHIVE, L"&Unpack Archive File..." );
+        AppendMenuW( toolsMenu, MF_SEPARATOR, 0, nullptr );
+        AppendMenuW( toolsMenu, MF_STRING, ID_TOOLS_EXPORT_MESSAGE, L"Export Current &Message..." );
+        AppendMenuW( toolsMenu, MF_STRING, ID_TOOLS_EXPORT_THREAD, L"Export Current &Thread..." );
+        AppendMenuW( toolsMenu, MF_STRING, ID_TOOLS_EXPORT_SEARCH_RESULTS, L"Export Search &Results..." );
+        AppendMenuW( menu, MF_POPUP, UINT_PTR( toolsMenu ), L"&Tools" );
+
         HMENU helpMenu = CreatePopupMenu();
         AppendMenuW( helpMenu, MF_STRING, ID_HELP_SHORTCUTS, L"&Shortcuts" );
         AppendMenuW( menu, MF_POPUP, UINT_PTR( helpMenu ), L"&Help" );
@@ -840,6 +992,7 @@ private:
 
         ConfigureListViews();
         UpdateViewMenuState();
+        UpdateToolsMenuState();
         UpdateTabVisibility();
         UpdateStatusText( L"Open a packaged archive file or archive directory to begin browsing." );
         ClearDisplayedMessage();
@@ -1058,6 +1211,24 @@ private:
             return true;
         case ID_SEARCH_EXECUTE:
             ExecuteSearch();
+            return true;
+        case ID_TOOLS_VERIFY_ARCHIVE:
+            VerifyCurrentArchive();
+            return true;
+        case ID_TOOLS_PACK_ARCHIVE:
+            PackArchiveFolder();
+            return true;
+        case ID_TOOLS_UNPACK_ARCHIVE:
+            UnpackArchiveFile();
+            return true;
+        case ID_TOOLS_EXPORT_MESSAGE:
+            ExportCurrentMessage();
+            return true;
+        case ID_TOOLS_EXPORT_THREAD:
+            ExportCurrentThread();
+            return true;
+        case ID_TOOLS_EXPORT_SEARCH_RESULTS:
+            ExportSearchResults();
             return true;
         case ID_HELP_SHORTCUTS:
             ShowShortcuts();
@@ -1755,6 +1926,761 @@ private:
         );
     }
 
+    void ShowInfo( const std::wstring& message, const wchar_t* title = L"Usenet Archive Browser" )
+    {
+        MessageBoxW( m_hwnd, message.c_str(), title, MB_OK | MB_ICONINFORMATION );
+    }
+
+    std::wstring BuildDefaultMessageFileName( uint32_t message ) const
+    {
+        if( !m_archive || message == InvalidMessage || message >= m_archive->NumberOfMessages() )
+        {
+            return L"message.eml";
+        }
+
+        auto stem = Utf8ToWide( m_archive->GetSubject( message ) );
+        if( stem.empty() )
+        {
+            char unpack[2048];
+            m_archive->UnpackMsgId( m_archive->GetMessageId( message ), unpack );
+            stem = Utf8ToWide( unpack );
+        }
+        return SanitizeFilenamePart( stem ) + L".eml";
+    }
+
+    std::wstring MakeUniquePath( const std::wstring& folder, const std::wstring& fileName ) const
+    {
+        const auto dot = fileName.find_last_of( L'.' );
+        const auto stem = dot == std::wstring::npos ? fileName : fileName.substr( 0, dot );
+        const auto ext = dot == std::wstring::npos ? std::wstring() : fileName.substr( dot );
+
+        auto candidate = JoinPath( folder, fileName );
+        auto candidateUtf8 = NormalizePathSeparators( WideToUtf8( candidate ) );
+        for( int suffix=2; Exists( candidateUtf8 ); suffix++ )
+        {
+            candidate = JoinPath( folder, stem + L" (" + std::to_wstring( suffix ) + L")" + ext );
+            candidateUtf8 = NormalizePathSeparators( WideToUtf8( candidate ) );
+        }
+        return candidate;
+    }
+
+    std::wstring BrowseForSaveFile( const wchar_t* title, const wchar_t* defaultName, const wchar_t* defaultExtension, const COMDLG_FILTERSPEC* filters, UINT filterCount )
+    {
+        IFileSaveDialog* dialog = nullptr;
+        if( FAILED( CoCreateInstance( CLSID_FileSaveDialog, nullptr, CLSCTX_INPROC_SERVER, IID_PPV_ARGS( &dialog ) ) ) )
+        {
+            return {};
+        }
+
+        DWORD options = 0;
+        dialog->GetOptions( &options );
+        dialog->SetOptions( options | FOS_FORCEFILESYSTEM | FOS_OVERWRITEPROMPT | FOS_PATHMUSTEXIST );
+        dialog->SetTitle( title );
+        dialog->SetDefaultExtension( defaultExtension );
+        if( defaultName && *defaultName )
+        {
+            dialog->SetFileName( defaultName );
+        }
+        if( filters && filterCount != 0 )
+        {
+            dialog->SetFileTypes( filterCount, filters );
+            dialog->SetFileTypeIndex( 1 );
+        }
+
+        std::wstring ret;
+        if( SUCCEEDED( dialog->Show( m_hwnd ) ) )
+        {
+            IShellItem* item = nullptr;
+            if( SUCCEEDED( dialog->GetResult( &item ) ) )
+            {
+                PWSTR path = nullptr;
+                if( SUCCEEDED( item->GetDisplayName( SIGDN_FILESYSPATH, &path ) ) )
+                {
+                    ret = path;
+                    CoTaskMemFree( path );
+                }
+                item->Release();
+            }
+        }
+
+        dialog->Release();
+        return ret;
+    }
+
+    void VerifyCurrentArchive()
+    {
+        if( !m_archive )
+        {
+            ShowError( L"Open an archive first to verify it." );
+            return;
+        }
+
+        ScopedWaitCursor wait;
+        std::vector<VerifyLine> lines;
+        lines.reserve( 8 );
+
+        const auto addLine = [&]( VerifyState state, const std::wstring& text ) {
+            lines.push_back( VerifyLine { state, text } );
+        };
+
+        const auto size = uint32_t( m_archive->NumberOfMessages() );
+
+        {
+            robin_hood::unordered_flat_set<uint32_t> remaining;
+            remaining.reserve( size );
+            for( uint32_t i=0; i<size; i++ )
+            {
+                remaining.emplace( i );
+            }
+
+            std::function<void(uint32_t)> removeReachable;
+            removeReachable = [&]( uint32_t idx ) {
+                const auto it = remaining.find( idx );
+                if( it == remaining.end() ) return;
+                remaining.erase( it );
+                const auto children = m_archive->GetChildren( idx );
+                for( uint64_t i=0; i<children.size; i++ )
+                {
+                    removeReachable( children.ptr[i] );
+                }
+            };
+
+            const auto top = m_archive->GetTopLevel();
+            for( uint64_t i=0; i<top.size; i++ )
+            {
+                removeReachable( top.ptr[i] );
+            }
+
+            if( remaining.empty() )
+            {
+                addLine( VerifyState::Ok, L"All messages reachable." );
+            }
+            else
+            {
+                addLine( VerifyState::Fail, std::to_wstring( remaining.size() ) + L" messages are unreachable." );
+            }
+        }
+
+        {
+            bool ok = true;
+            for( uint32_t i=0; i<size; i++ )
+            {
+                const auto idx = m_archive->GetMessageIndex( m_archive->GetMessageId( i ) );
+                if( idx != int( i ) )
+                {
+                    ok = false;
+                    break;
+                }
+            }
+            addLine( ok ? VerifyState::Ok : VerifyState::Fail, ok ? L"Message-ID hash looks valid." : L"Message-ID hash is broken." );
+        }
+
+        {
+            std::vector<uint32_t> order;
+            order.reserve( size );
+            std::function<void(uint32_t)> expand;
+            expand = [&]( uint32_t msgidx ) {
+                const auto children = m_archive->GetChildren( msgidx );
+                for( uint64_t i=0; i<children.size; i++ )
+                {
+                    order.emplace_back( children.ptr[i] );
+                    expand( children.ptr[i] );
+                }
+            };
+
+            const auto topLevel = m_archive->GetTopLevel();
+            for( uint64_t i=0; i<topLevel.size; i++ )
+            {
+                order.emplace_back( topLevel.ptr[i] );
+                expand( topLevel.ptr[i] );
+            }
+
+            bool ok = order.size() == size;
+            for( uint32_t i=0; ok && i<size; i++ )
+            {
+                if( order[i] != i )
+                {
+                    ok = false;
+                }
+            }
+            addLine( ok ? VerifyState::Ok : VerifyState::Fail, ok ? L"Messages are sorted in archive order." : L"Messages are not sorted in archive order." );
+        }
+
+        {
+            const auto name = m_archive->GetArchiveName();
+            if( name.second == 0 )
+            {
+                addLine( VerifyState::Fail, L"Archive name is missing." );
+            }
+            else
+            {
+                auto bad = false;
+                for( uint64_t i=0; i<name.second; i++ )
+                {
+                    if( name.first[i] == '\n' )
+                    {
+                        bad = true;
+                        break;
+                    }
+                }
+                addLine( bad ? VerifyState::Fail : VerifyState::Ok, bad ? L"Archive name contains a newline." : L"Archive name looks valid." );
+            }
+        }
+
+        {
+            const auto shortDesc = m_archive->GetShortDescription();
+            const auto longDesc = m_archive->GetLongDescription();
+            if( shortDesc.second == 0 && longDesc.second == 0 )
+            {
+                addLine( VerifyState::Info, L"Short and long descriptions are missing." );
+            }
+            else if( shortDesc.second == 0 )
+            {
+                addLine( VerifyState::Info, L"Short description is missing." );
+            }
+            else if( longDesc.second == 0 )
+            {
+                addLine( VerifyState::Info, L"Long description is missing." );
+            }
+            else
+            {
+                addLine( VerifyState::Ok, L"Short and long descriptions are present." );
+            }
+        }
+
+        addLine( m_archive->HasLexDist() ? VerifyState::Ok : VerifyState::Info, m_archive->HasLexDist() ? L"Lexicon distance data is available." : L"No lexicon distance data." );
+
+        {
+            std::vector<int32_t> cache( size, -1 );
+            std::function<int32_t(uint32_t)> countChildren;
+            countChildren = [&]( uint32_t idx ) -> int32_t {
+                auto& cached = cache[idx];
+                if( cached != -1 ) return cached;
+
+                cached = 1;
+                const auto children = m_archive->GetChildren( idx );
+                for( uint64_t i=0; i<children.size; i++ )
+                {
+                    cached += countChildren( children.ptr[i] );
+                }
+                return cached;
+            };
+
+            bool ok = true;
+            for( uint32_t i=0; i<size; i++ )
+            {
+                if( uint32_t( countChildren( i ) ) != m_archive->GetTotalChildrenCount( i ) )
+                {
+                    ok = false;
+                    break;
+                }
+            }
+            addLine( ok ? VerifyState::Ok : VerifyState::Fail, ok ? L"Total children counts are valid." : L"Total children counts are wrong." );
+        }
+
+        {
+            robin_hood::unordered_flat_set<std::string> unique;
+            unique.reserve( size );
+            bool ok = true;
+            for( uint32_t i=0; i<size; i++ )
+            {
+                char unpack[2048];
+                m_archive->UnpackMsgId( m_archive->GetMessageId( i ), unpack );
+                if( unique.find( unpack ) == unique.end() )
+                {
+                    unique.emplace( unpack );
+                }
+                else
+                {
+                    ok = false;
+                    break;
+                }
+            }
+            addLine( ok ? VerifyState::Ok : VerifyState::Fail, ok ? L"No duplicate messages found." : L"Duplicate messages exist." );
+        }
+
+        int okCount = 0;
+        int failCount = 0;
+        int infoCount = 0;
+        std::wstring report =
+            L"Verification of:\n" + Utf8ToWide( m_activeArchivePath ) + L"\n\n" +
+            L"Messages: " + std::to_wstring( m_archive->NumberOfMessages() ) + L"\n" +
+            L"Top-level threads: " + std::to_wstring( m_archive->NumberOfTopLevel() ) + L"\n\n";
+        for( const auto& line : lines )
+        {
+            switch( line.state )
+            {
+            case VerifyState::Ok: okCount++; break;
+            case VerifyState::Fail: failCount++; break;
+            case VerifyState::Info: infoCount++; break;
+            }
+            report += VerifyStatePrefix( line.state );
+            report += line.text;
+            report += L"\n";
+        }
+        report += L"\nSummary: " + std::to_wstring( okCount ) + L" ok, " + std::to_wstring( failCount ) + L" failures, " + std::to_wstring( infoCount ) + L" informational.";
+
+        UpdateStatusText( L"Verification finished: " + std::to_wstring( failCount ) + L" failures." );
+        ShowInfo( report, L"Archive Verification" );
+    }
+
+    bool PackArchiveDirectory( const std::string& sourceFolder, const std::string& destinationFile, std::wstring& error )
+    {
+        if( !Exists( sourceFolder ) || !IsDirectoryPath( sourceFolder ) )
+        {
+            error = L"The selected source folder does not exist or is not a directory.";
+            return false;
+        }
+
+        for( int i=0; i<PackageFiles; i++ )
+        {
+            const auto path = JoinPath( sourceFolder, PackageContents[i].filename );
+            if( !PackageContents[i].optional && !Exists( path ) )
+            {
+                error = L"The folder is missing required archive file: " + Utf8ToWide( PackageContents[i].filename );
+                return false;
+            }
+        }
+
+        std::vector<FileMap<char>> files;
+        files.reserve( PackageFiles );
+        for( int i=0; i<PackageFiles; i++ )
+        {
+            files.emplace_back( JoinPath( sourceFolder, PackageContents[i].filename ), true );
+        }
+
+        FILE* out = fopen( destinationFile.c_str(), "wb" );
+        if( !out )
+        {
+            error = L"Could not open the destination file for writing.";
+            return false;
+        }
+
+        const char zero[8] = {};
+        auto closeOnFailure = [&]() {
+            fclose( out );
+        };
+
+        uint64_t offset = 0;
+        if( fwrite( PackageHeader, 1, PackageHeaderSize, out ) != PackageHeaderSize )
+        {
+            closeOnFailure();
+            error = L"Failed to write the package header.";
+            return false;
+        }
+        offset += PackageHeaderSize;
+
+        for( int i=0; i<PackageFiles; i++ )
+        {
+            const auto size = files[i].Size();
+            if( fwrite( &size, 1, sizeof( size ), out ) != sizeof( size ) )
+            {
+                closeOnFailure();
+                error = L"Failed to write package metadata.";
+                return false;
+            }
+            offset += sizeof( size );
+        }
+
+        for( int i=0; i<PackageFiles; i++ )
+        {
+            const auto size = files[i].Size();
+            if( size != 0 && fwrite( static_cast<const char*>( files[i] ), 1, size, out ) != size )
+            {
+                closeOnFailure();
+                error = L"Failed while writing packaged archive data.";
+                return false;
+            }
+            offset += size;
+
+            const auto aligned = PackageAlign( offset );
+            if( aligned != offset )
+            {
+                const auto padding = aligned - offset;
+                if( fwrite( zero, 1, padding, out ) != padding )
+                {
+                    closeOnFailure();
+                    error = L"Failed while writing package padding.";
+                    return false;
+                }
+                offset = aligned;
+            }
+        }
+
+        fclose( out );
+        return true;
+    }
+
+    bool ExtractPackagedArchive( const std::string& sourceFile, const std::string& destinationFolder, std::wstring& error )
+    {
+        if( !Exists( sourceFile ) || !IsFile( sourceFile ) )
+        {
+            error = L"The selected source file does not exist.";
+            return false;
+        }
+
+        if( Exists( destinationFolder ) )
+        {
+            if( !IsDirectoryPath( destinationFolder ) )
+            {
+                error = L"The selected destination is not a folder.";
+                return false;
+            }
+            if( !ListDirectory( destinationFolder ).empty() )
+            {
+                error = L"Choose an empty destination folder for unpacking.";
+                return false;
+            }
+        }
+        else if( !CreateDirStruct( destinationFolder ) )
+        {
+            error = L"Could not create the destination folder.";
+            return false;
+        }
+
+        FILE* in = fopen( sourceFile.c_str(), "rb" );
+        if( !in )
+        {
+            error = L"Could not open the packaged archive.";
+            return false;
+        }
+
+        auto closeOnFailure = [&]() {
+            fclose( in );
+        };
+
+        uint64_t offset = 0;
+        char header[PackageHeaderSize];
+        if( fread( header, 1, PackageHeaderSize, in ) != PackageHeaderSize )
+        {
+            closeOnFailure();
+            error = L"Could not read the package header.";
+            return false;
+        }
+        offset += PackageHeaderSize;
+
+        if( memcmp( header, PackageHeader, PackageMagicSize ) != 0 )
+        {
+            closeOnFailure();
+            error = L"The selected file is not a packaged Usenet archive.";
+            return false;
+        }
+
+        const auto version = uint8_t( header[PackageMagicSize] );
+        if( version > PackageVersion )
+        {
+            closeOnFailure();
+            error = L"This package version is newer than this build supports.";
+            return false;
+        }
+
+        int fileCount = PackageFiles;
+        if( version < 3 )
+        {
+            fileCount -= AdditionalFilesV3;
+            if( version < 2 )
+            {
+                fileCount -= AdditionalFilesV2;
+                if( version < 1 )
+                {
+                    fileCount -= AdditionalFilesV1;
+                }
+            }
+        }
+
+        uint64_t sizes[PackageFiles] = {};
+        for( int i=0; i<fileCount; i++ )
+        {
+            if( fread( sizes + i, 1, sizeof( uint64_t ), in ) != sizeof( uint64_t ) )
+            {
+                closeOnFailure();
+                error = L"Could not read package metadata.";
+                return false;
+            }
+            offset += sizeof( uint64_t );
+        }
+
+        std::vector<char> buffer( 64 * 1024 );
+        for( int i=0; i<fileCount; i++ )
+        {
+            if( sizes[i] == 0 ) continue;
+
+            const auto outputFile = JoinPath( destinationFolder, PackageContents[i].filename );
+            FILE* out = fopen( outputFile.c_str(), "wb" );
+            if( !out )
+            {
+                closeOnFailure();
+                error = L"Could not create unpacked file: " + Utf8ToWide( PackageContents[i].filename );
+                return false;
+            }
+
+            uint64_t left = sizes[i];
+            while( left > 0 )
+            {
+                const auto chunk = std::min<uint64_t>( left, buffer.size() );
+                if( fread( buffer.data(), 1, chunk, in ) != chunk )
+                {
+                    fclose( out );
+                    closeOnFailure();
+                    error = L"Unexpected end of package while extracting files.";
+                    return false;
+                }
+                if( fwrite( buffer.data(), 1, chunk, out ) != chunk )
+                {
+                    fclose( out );
+                    closeOnFailure();
+                    error = L"Could not write unpacked file contents.";
+                    return false;
+                }
+                offset += chunk;
+                left -= chunk;
+            }
+            fclose( out );
+
+            const auto aligned = PackageAlign( offset );
+            if( aligned != offset )
+            {
+                const auto padding = aligned - offset;
+                if( fread( buffer.data(), 1, padding, in ) != padding )
+                {
+                    closeOnFailure();
+                    error = L"Unexpected end of package while skipping padding.";
+                    return false;
+                }
+                offset = aligned;
+            }
+        }
+
+        fclose( in );
+        return true;
+    }
+
+    void PackArchiveFolder()
+    {
+        auto sourceFolder = BrowseForPath( true, L"Select archive folder to package" );
+        if( sourceFolder.empty() ) return;
+
+        auto defaultName = sourceFolder;
+        const auto separator = defaultName.find_last_of( L"\\/" );
+        defaultName = separator == std::wstring::npos ? defaultName : defaultName.substr( separator + 1 );
+        defaultName = SanitizeFilenamePart( defaultName ) + L".usenet";
+
+        const COMDLG_FILTERSPEC filters[] = {
+            { L"Usenet archive files", L"*.usenet;*.uarc;*.pkg" },
+            { L"All files", L"*.*" },
+        };
+        auto destination = BrowseForSaveFile( L"Save packaged archive as", defaultName.c_str(), L"usenet", filters, UINT( sizeof( filters ) / sizeof( *filters ) ) );
+        if( destination.empty() ) return;
+
+        ScopedWaitCursor wait;
+        std::wstring error;
+        const auto sourceUtf8 = NormalizePathSeparators( WideToUtf8( sourceFolder ) );
+        const auto destinationUtf8 = NormalizePathSeparators( WideToUtf8( destination ) );
+        if( !PackArchiveDirectory( sourceUtf8, destinationUtf8, error ) )
+        {
+            ShowError( error );
+            return;
+        }
+
+        UpdateStatusText( L"Archive folder packaged to " + destination );
+        ShowInfo( L"Packaged archive saved to:\n" + destination, L"Pack Archive" );
+    }
+
+    void UnpackArchiveFile()
+    {
+        const COMDLG_FILTERSPEC filters[] = {
+            { L"Usenet archive files", L"*.usenet;*.uarc;*.pkg;*.*" },
+        };
+        auto sourceFile = BrowseForPath( false, L"Select packaged archive file to unpack", filters, UINT( sizeof( filters ) / sizeof( *filters ) ) );
+        if( sourceFile.empty() ) return;
+
+        auto destinationFolder = BrowseForPath( true, L"Select an empty destination folder for unpacking" );
+        if( destinationFolder.empty() ) return;
+
+        ScopedWaitCursor wait;
+        std::wstring error;
+        const auto sourceUtf8 = NormalizePathSeparators( WideToUtf8( sourceFile ) );
+        const auto destinationUtf8 = NormalizePathSeparators( WideToUtf8( destinationFolder ) );
+        if( !ExtractPackagedArchive( sourceUtf8, destinationUtf8, error ) )
+        {
+            ShowError( error );
+            return;
+        }
+
+        UpdateStatusText( L"Archive unpacked to " + destinationFolder );
+        ShowInfo( L"Archive unpacked to:\n" + destinationFolder, L"Unpack Archive" );
+    }
+
+    bool WriteMessageToFile( uint32_t message, const std::wstring& path, std::wstring& error )
+    {
+        if( !m_archive || message == InvalidMessage || message >= m_archive->NumberOfMessages() )
+        {
+            error = L"No message is selected.";
+            return false;
+        }
+
+        ExpandingBuffer buffer;
+        const auto raw = m_archive->GetMessage( message, buffer );
+        if( !raw )
+        {
+            error = L"Could not load the selected message.";
+            return false;
+        }
+
+        const auto outputPath = NormalizePathSeparators( WideToUtf8( path ) );
+        FILE* out = fopen( outputPath.c_str(), "wb" );
+        if( !out )
+        {
+            error = L"Could not open the destination file for writing.";
+            return false;
+        }
+
+        const auto size = strlen( raw );
+        const auto written = fwrite( raw, 1, size, out );
+        fclose( out );
+        if( written != size )
+        {
+            error = L"Could not write the selected message to disk.";
+            return false;
+        }
+        return true;
+    }
+
+    void CollectThreadMessagesRecursive( uint32_t message, std::vector<uint32_t>& out ) const
+    {
+        if( !m_archive || message == InvalidMessage || message >= m_archive->NumberOfMessages() ) return;
+
+        out.emplace_back( message );
+        const auto children = m_archive->GetChildren( message );
+        for( uint64_t i=0; i<children.size; i++ )
+        {
+            CollectThreadMessagesRecursive( children.ptr[i], out );
+        }
+    }
+
+    std::vector<uint32_t> CollectCurrentThreadMessages() const
+    {
+        std::vector<uint32_t> messages;
+        if( !m_archive || m_selectedMessage == InvalidMessage ) return messages;
+
+        messages.reserve( m_archive->GetTotalChildrenCount( GetThreadRoot( m_selectedMessage ) ) );
+        CollectThreadMessagesRecursive( GetThreadRoot( m_selectedMessage ), messages );
+        return messages;
+    }
+
+    std::vector<uint32_t> CollectSearchResultMessages() const
+    {
+        std::vector<uint32_t> messages;
+        messages.reserve( m_searchData.results.size() );
+        for( const auto& result : m_searchData.results )
+        {
+            messages.emplace_back( result.postid );
+        }
+        return messages;
+    }
+
+    bool ExportMessagesToFolder( const std::vector<uint32_t>& messages, const std::wstring& folder, std::wstring& error )
+    {
+        if( messages.empty() )
+        {
+            error = L"There is nothing to export.";
+            return false;
+        }
+
+        const auto folderUtf8 = NormalizePathSeparators( WideToUtf8( folder ) );
+        if( !Exists( folderUtf8 ) || !IsDirectoryPath( folderUtf8 ) )
+        {
+            error = L"The selected export folder does not exist.";
+            return false;
+        }
+
+        for( size_t i=0; i<messages.size(); i++ )
+        {
+            const auto baseName = std::to_wstring( i + 1 ) + L" - " + BuildDefaultMessageFileName( messages[i] );
+            const auto target = MakeUniquePath( folder, baseName );
+            if( !WriteMessageToFile( messages[i], target, error ) )
+            {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    void ExportCurrentMessage()
+    {
+        if( !m_archive || m_selectedMessage == InvalidMessage )
+        {
+            ShowError( L"No message is selected." );
+            return;
+        }
+
+        const COMDLG_FILTERSPEC filters[] = {
+            { L"Mail message", L"*.eml" },
+            { L"All files", L"*.*" },
+        };
+        auto target = BrowseForSaveFile( L"Export current message", BuildDefaultMessageFileName( m_selectedMessage ).c_str(), L"eml", filters, UINT( sizeof( filters ) / sizeof( *filters ) ) );
+        if( target.empty() ) return;
+
+        ScopedWaitCursor wait;
+        std::wstring error;
+        if( !WriteMessageToFile( m_selectedMessage, target, error ) )
+        {
+            ShowError( error );
+            return;
+        }
+
+        UpdateStatusText( L"Message exported to " + target );
+        ShowInfo( L"Message exported to:\n" + target, L"Export Message" );
+    }
+
+    void ExportCurrentThread()
+    {
+        if( !m_archive || m_selectedMessage == InvalidMessage )
+        {
+            ShowError( L"No thread is selected." );
+            return;
+        }
+
+        auto folder = BrowseForPath( true, L"Select destination folder for exported thread messages" );
+        if( folder.empty() ) return;
+
+        ScopedWaitCursor wait;
+        std::wstring error;
+        const auto messages = CollectCurrentThreadMessages();
+        if( !ExportMessagesToFolder( messages, folder, error ) )
+        {
+            ShowError( error );
+            return;
+        }
+
+        UpdateStatusText( L"Exported " + std::to_wstring( messages.size() ) + L" thread messages to " + folder );
+        ShowInfo( L"Exported " + std::to_wstring( messages.size() ) + L" messages to:\n" + folder, L"Export Thread" );
+    }
+
+    void ExportSearchResults()
+    {
+        if( m_searchData.results.empty() )
+        {
+            ShowError( L"There are no search results to export." );
+            return;
+        }
+
+        auto folder = BrowseForPath( true, L"Select destination folder for exported search results" );
+        if( folder.empty() ) return;
+
+        ScopedWaitCursor wait;
+        std::wstring error;
+        const auto messages = CollectSearchResultMessages();
+        if( !ExportMessagesToFolder( messages, folder, error ) )
+        {
+            ShowError( error );
+            return;
+        }
+
+        UpdateStatusText( L"Exported " + std::to_wstring( messages.size() ) + L" search results to " + folder );
+        ShowInfo( L"Exported " + std::to_wstring( messages.size() ) + L" messages to:\n" + folder, L"Export Search Results" );
+    }
+
     void OpenPathDialog( bool folder )
     {
         auto path = BrowseForPath( folder );
@@ -1762,7 +2688,7 @@ private:
         LoadPath( WideToUtf8( path ) );
     }
 
-    std::wstring BrowseForPath( bool folder )
+    std::wstring BrowseForPath( bool folder, const wchar_t* title = nullptr, const COMDLG_FILTERSPEC* filters = nullptr, UINT filterCount = 0 )
     {
         IFileDialog* dialog = nullptr;
         if( FAILED( CoCreateInstance( CLSID_FileOpenDialog, nullptr, CLSCTX_INPROC_SERVER, IID_PPV_ARGS( &dialog ) ) ) )
@@ -1778,14 +2704,21 @@ private:
             options |= FOS_PICKFOLDERS;
         }
         dialog->SetOptions( options );
-        dialog->SetTitle( folder ? L"Open archive or galaxy folder" : L"Open packaged archive file" );
+        dialog->SetTitle( title ? title : ( folder ? L"Open archive or galaxy folder" : L"Open packaged archive file" ) );
 
         if( !folder )
         {
-            const COMDLG_FILTERSPEC filters[] = {
-                { L"Usenet archive files", L"*.usenet;*.uarc;*.pkg;*.*" },
-            };
-            dialog->SetFileTypes( UINT( sizeof( filters ) / sizeof( *filters ) ), filters );
+            if( filters && filterCount != 0 )
+            {
+                dialog->SetFileTypes( filterCount, filters );
+            }
+            else
+            {
+                const COMDLG_FILTERSPEC defaultFilters[] = {
+                    { L"Usenet archive files", L"*.usenet;*.uarc;*.pkg;*.*" },
+                };
+                dialog->SetFileTypes( UINT( sizeof( defaultFilters ) / sizeof( *defaultFilters ) ), defaultFilters );
+            }
         }
 
         std::wstring ret;
@@ -1858,6 +2791,7 @@ private:
 
         RestoreHistoryOrSelectFirst();
         UpdateTitle();
+        UpdateToolsMenuState();
         UpdateStatusText(
             L"Loaded archive with " + std::to_wstring( m_archive->NumberOfMessages() ) +
             L" messages across " + std::to_wstring( m_archive->NumberOfTopLevel() ) +
@@ -1944,6 +2878,7 @@ private:
         }
 
         UpdateMessagePane();
+        UpdateToolsMenuState();
         (void)previous;
     }
 
@@ -1996,6 +2931,7 @@ private:
     {
         SetWindowTextW( m_detailsEdit, L"No message selected." );
         SetWindowTextW( m_bodyEdit, L"" );
+        UpdateToolsMenuState();
     }
 
     void ExecuteSearch()
@@ -2050,6 +2986,7 @@ private:
         {
             UpdateStatusText( L"No search results for: " + queryWide );
         }
+        UpdateToolsMenuState();
     }
 
     void PersistState()
@@ -2075,6 +3012,7 @@ private:
         TabCtrl_SetCurSel( m_tab, tab );
         UpdateTabVisibility();
         UpdateViewMenuState();
+        UpdateToolsMenuState();
         if( focusPrimary ) FocusPrimaryControl();
     }
 
@@ -2091,6 +3029,23 @@ private:
 
         CheckMenuRadioItem( menu, ID_VIEW_BROWSE, ID_VIEW_SEARCH, m_currentTab == TabBrowse ? ID_VIEW_BROWSE : ID_VIEW_SEARCH, MF_BYCOMMAND );
         CheckMenuItem( menu, ID_VIEW_TOGGLE_HEADERS, MF_BYCOMMAND | ( m_showFullHeaders ? MF_CHECKED : MF_UNCHECKED ) );
+        DrawMenuBar( m_hwnd );
+    }
+
+    void UpdateToolsMenuState()
+    {
+        auto menu = GetMenu( m_hwnd );
+        if( !menu ) return;
+
+        const auto hasArchive = m_archive != nullptr;
+        const auto hasMessage = hasArchive && m_selectedMessage != InvalidMessage;
+        const auto hasSearchResults = !m_searchData.results.empty();
+
+        EnableMenuItem( menu, ID_TOOLS_VERIFY_ARCHIVE, MF_BYCOMMAND | ( hasArchive ? MF_ENABLED : MF_GRAYED ) );
+        EnableMenuItem( menu, ID_TOOLS_EXPORT_MESSAGE, MF_BYCOMMAND | ( hasMessage ? MF_ENABLED : MF_GRAYED ) );
+        EnableMenuItem( menu, ID_TOOLS_EXPORT_THREAD, MF_BYCOMMAND | ( hasMessage ? MF_ENABLED : MF_GRAYED ) );
+        EnableMenuItem( menu, ID_TOOLS_EXPORT_SEARCH_RESULTS, MF_BYCOMMAND | ( hasSearchResults ? MF_ENABLED : MF_GRAYED ) );
+        DrawMenuBar( m_hwnd );
     }
 
     void FocusPrimaryControl()

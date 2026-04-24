@@ -29,6 +29,11 @@ Current scope:
 - Search the archive with the existing `libuat` search engine.
 - Read messages in a normal windowed interface with keyboard shortcuts for focus,
   expand/collapse, and body navigation.
+- Verify the currently opened archive from the GUI.
+- Pack unpacked archive directories into a single packaged archive file.
+- Unpack packaged archive files into a normal archive directory.
+- Export the current message, the current thread, or the current search results
+  to message files from the GUI.
 
 Build it on Windows with CMake and run `winbrowser <archive-path>`, or launch it
 without arguments and open an archive from the File menu.
