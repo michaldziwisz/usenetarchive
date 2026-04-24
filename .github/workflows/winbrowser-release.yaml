@@ -159,6 +159,32 @@ jobs:
           fi
 
           TITLE="WinBrowser ${RELEASE_TAG#winbrowser-v}"
+          DEFAULT_BRANCH="$(gh api repos/${TARGET_RELEASE_REPO} --jq '.default_branch')"
+          TARGET_SHA="$(gh api repos/${TARGET_RELEASE_REPO}/git/ref/heads/${DEFAULT_BRANCH} --jq '.object.sha')"
+          TAG_OBJECT_SHA="$(
+            gh api \
+              --method POST \
+              repos/${TARGET_RELEASE_REPO}/git/tags \
+              -f tag="${RELEASE_TAG}" \
+              -f message="${TITLE}" \
+              -f object="${TARGET_SHA}" \
+              -f type="commit" \
+              --jq '.sha'
+          )"
+
+          if gh api repos/${TARGET_RELEASE_REPO}/git/ref/tags/${RELEASE_TAG} >/dev/null 2>&1; then
+            gh api \
+              --method PATCH \
+              repos/${TARGET_RELEASE_REPO}/git/refs/tags/${RELEASE_TAG} \
+              -f sha="${TAG_OBJECT_SHA}" \
+              -F force=true >/dev/null
+          else
+            gh api \
+              --method POST \
+              repos/${TARGET_RELEASE_REPO}/git/refs \
+              -f ref="refs/tags/${RELEASE_TAG}" \
+              -f sha="${TAG_OBJECT_SHA}" >/dev/null
+          fi
 
           if gh release view "${RELEASE_TAG}" --repo "${TARGET_RELEASE_REPO}" >/dev/null 2>&1; then
             gh release upload "${RELEASE_TAG}" \
