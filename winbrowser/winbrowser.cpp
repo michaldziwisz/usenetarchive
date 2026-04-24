@@ -275,18 +275,20 @@ void EnsureListBoxVisible( HWND list, int row )
     SendMessageW( list, LB_SETTOPINDEX, row, 0 );
 }
 
-void SetListBoxSelection( HWND list, int row )
-{
-    if( row < 0 ) return;
-    SendMessageW( list, LB_SETCURSEL, row, 0 );
-    SendMessageW( list, LB_SETCARETINDEX, row, FALSE );
-    EnsureListBoxVisible( list, row );
-}
-
 int GetListBoxSelection( HWND list )
 {
     const auto row = int( SendMessageW( list, LB_GETCURSEL, 0, 0 ) );
     return row == LB_ERR ? -1 : row;
+}
+
+void SetListBoxSelection( HWND list, int row )
+{
+    if( row < 0 ) return;
+    if( GetListBoxSelection( list ) != row )
+    {
+        SendMessageW( list, LB_SETCURSEL, row, 0 );
+    }
+    EnsureListBoxVisible( list, row );
 }
 
 bool MoveFocusToNextDialogItem( HWND hwnd, bool previous )
@@ -375,9 +377,6 @@ LRESULT CALLBACK ThreadNavigatorSubclassProc( HWND hwnd, UINT msg, WPARAM wParam
         {
             return DefSubclassProc( hwnd, msg, wParam, lParam ) | DLGC_WANTMESSAGE;
         }
-        break;
-    case WM_SETFOCUS:
-        SetListBoxSelection( hwnd, 0 );
         break;
     case WM_KEYDOWN:
         if( wParam == VK_LEFT || wParam == VK_RIGHT || wParam == VK_UP || wParam == VK_DOWN || wParam == VK_HOME || wParam == VK_END || wParam == VK_PRIOR || wParam == VK_NEXT || wParam == VK_MULTIPLY || wParam == VK_RETURN )
@@ -1023,6 +1022,8 @@ private:
             text += L" | author ";
             text += author;
         }
+        text += L" | ";
+        text += FormatDateTime( m_archive->GetDate( data.messageIndex ) );
         if( data.depth > 0 )
         {
             text += L" | reply level ";
@@ -1503,7 +1504,6 @@ private:
         if( row < 0 ) return;
 
         DisplayMessage( message, true );
-        UpdateThreadNavigator();
         if( focus ) FocusThreadList();
     }
 
@@ -1707,9 +1707,7 @@ private:
 
     void FocusThreadList()
     {
-        UpdateThreadNavigator();
         SetFocus( m_threadList );
-        SetListBoxSelection( m_threadList, 0 );
     }
 
     void UpdateStatusText( const std::wstring& text )
