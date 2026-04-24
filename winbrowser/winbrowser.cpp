@@ -1749,7 +1749,7 @@ private:
             L"Ctrl+Right Arrow  Expand selected subtree recursively\n"
             L"Left Arrow  Collapse selected thread item or move to parent\n"
             L"Enter on thread list  Move focus to message body\n"
-            L"Enter on search results  Open result in Browse tab",
+            L"Enter on search results  Move focus to message body in Search",
             L"Keyboard Shortcuts",
             MB_OK | MB_ICONINFORMATION
         );
@@ -1919,9 +1919,11 @@ private:
         if( row < 0 || size_t( row ) >= m_searchData.results.size() ) return;
 
         const auto message = m_searchData.results[row].postid;
-        SetActiveTab( TabBrowse, false );
-        RevealMessage( message );
-        SelectThreadMessage( message, true );
+        if( message != m_selectedMessage )
+        {
+            DisplayMessage( message, true );
+        }
+        SetFocus( m_bodyEdit );
     }
 
     void DisplayMessage( uint32_t message, bool addHistory )
