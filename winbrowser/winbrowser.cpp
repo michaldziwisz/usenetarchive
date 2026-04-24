@@ -228,22 +228,6 @@ std::wstring PairToWideString( const std::pair<const char*, uint64_t>& value )
     return Utf8ToWide( std::string( value.first, value.second ) );
 }
 
-void AlignTreeItemForFocus( HWND hwnd, HTREEITEM item )
-{
-    if( !item ) return;
-
-    TreeView_SelectItem( hwnd, item );
-    TreeView_Select( hwnd, item, TVGN_CARET );
-    TreeView_Select( hwnd, item, TVGN_FIRSTVISIBLE );
-    TreeView_EnsureVisible( hwnd, item );
-    UpdateWindow( hwnd );
-}
-
-void ReassertTreeItemFocus( HWND hwnd, HTREEITEM item )
-{
-    AlignTreeItemForFocus( hwnd, item );
-}
-
 bool StartsWithCaseInsensitive( const std::wstring& text, const wchar_t* prefix )
 {
     const auto prefixLen = wcslen( prefix );
@@ -370,23 +354,6 @@ LRESULT CALLBACK ForwardPanelMessagesSubclassProc( HWND hwnd, UINT msg, WPARAM w
         if( const auto parent = GetParent( hwnd ) )
         {
             return SendMessageW( parent, msg, wParam, lParam );
-        }
-        break;
-    default:
-        break;
-    }
-
-    return DefSubclassProc( hwnd, msg, wParam, lParam );
-}
-
-LRESULT CALLBACK ThreadTreeFocusSubclassProc( HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam, UINT_PTR, DWORD_PTR )
-{
-    switch( msg )
-    {
-    case WM_SETFOCUS:
-        if( const auto item = TreeView_GetSelection( hwnd ) )
-        {
-            ReassertTreeItemFocus( hwnd, item );
         }
         break;
     default:
@@ -623,9 +590,9 @@ private:
 
         m_threadList = CreateWindowExW(
             WS_EX_CLIENTEDGE,
-            WC_TREEVIEWW,
-            L"Thread tree",
-            WS_CHILD | WS_VISIBLE | WS_TABSTOP | TVS_HASBUTTONS | TVS_HASLINES | TVS_LINESATROOT | TVS_SHOWSELALWAYS,
+            WC_LISTVIEWW,
+            L"Thread list",
+            WS_CHILD | WS_VISIBLE | WS_TABSTOP | LVS_REPORT | LVS_SHOWSELALWAYS | LVS_SINGLESEL,
             0,
             0,
             100,
@@ -636,7 +603,6 @@ private:
             nullptr
         );
         SetWindowSubclass( m_threadList, &EscapeKeySubclassProc, 0, 0 );
-        SetWindowSubclass( m_threadList, &ThreadTreeFocusSubclassProc, 0, 0 );
 
         m_searchLabel = CreateWindowExW( 0, L"STATIC", L"Search query:", WS_CHILD | WS_VISIBLE, 0, 0, 100, 24, m_searchPanel, reinterpret_cast<HMENU>( IDC_SEARCH_LABEL ), m_instance, nullptr );
         m_searchEdit = CreateWindowExW( WS_EX_CLIENTEDGE, L"EDIT", L"", WS_CHILD | WS_VISIBLE | WS_TABSTOP | ES_AUTOHSCROLL, 0, 0, 100, 24, m_searchPanel, reinterpret_cast<HMENU>( IDC_SEARCH_EDIT ), m_instance, nullptr );
@@ -735,13 +701,16 @@ private:
 
     void ConfigureListViews()
     {
-        TreeView_SetUnicodeFormat( m_threadList, TRUE );
-
         const auto apply = []( HWND list ) {
             ListView_SetUnicodeFormat( list, TRUE );
             ListView_SetExtendedListViewStyleEx( list, LVS_EX_FULLROWSELECT | LVS_EX_DOUBLEBUFFER, LVS_EX_FULLROWSELECT | LVS_EX_DOUBLEBUFFER );
         };
+        apply( m_threadList );
         apply( m_resultsList );
+
+        AddColumn( m_threadList, 0, L"Subject", 520 );
+        AddColumn( m_threadList, 1, L"Author", 180 );
+        AddColumn( m_threadList, 2, L"Date", 160 );
 
         AddColumn( m_resultsList, 0, L"Subject", 420 );
         AddColumn( m_resultsList, 1, L"Author", 180 );
@@ -948,24 +917,11 @@ private:
         {
             switch( hdr->code )
             {
-            case TVN_SELCHANGEDA:
-                HandleThreadSelectionChanged( reinterpret_cast<const NMTREEVIEWA*>( hdr )->itemNew.hItem );
+            case LVN_ITEMCHANGED:
+                HandleThreadSelectionChanged( reinterpret_cast<const NMLISTVIEW*>( hdr ) );
                 return true;
-            case TVN_SELCHANGEDW:
-                HandleThreadSelectionChanged( reinterpret_cast<const NMTREEVIEWW*>( hdr )->itemNew.hItem );
-                return true;
-            case TVN_ITEMEXPANDINGA:
-                return HandleThreadExpanding(
-                    reinterpret_cast<const NMTREEVIEWA*>( hdr )->itemNew.hItem,
-                    reinterpret_cast<const NMTREEVIEWA*>( hdr )->action
-                );
-            case TVN_ITEMEXPANDINGW:
-                return HandleThreadExpanding(
-                    reinterpret_cast<const NMTREEVIEWW*>( hdr )->itemNew.hItem,
-                    reinterpret_cast<const NMTREEVIEWW*>( hdr )->action
-                );
-            case TVN_KEYDOWN:
-                return HandleThreadKeyDown( reinterpret_cast<const NMTVKEYDOWN*>( hdr ) );
+            case LVN_KEYDOWN:
+                return HandleThreadKeyDown( reinterpret_cast<const NMLVKEYDOWN*>( hdr ) );
             case NM_CLICK:
             case NM_SETFOCUS:
                 PostSyncThreadPreview();
@@ -1006,179 +962,120 @@ private:
         return false;
     }
 
-    std::wstring BuildThreadItemText( uint32_t message )
+    std::wstring BuildThreadItemText( size_t row )
     {
-        auto subject = Utf8ToWide( m_archive->GetSubject( message ) );
+        const auto data = m_threadModel.GetRowData( row );
+
+        auto subject = Utf8ToWide( m_archive->GetSubject( data.messageIndex ) );
         if( subject.empty() ) subject = L"(no subject)";
 
-        const auto author = Utf8ToWide( m_archive->GetRealName( message ) );
-        const auto date = FormatDateTime( m_archive->GetDate( message ) );
-        const auto replies = m_archive->GetTotalChildrenCount( message );
-
-        std::wstring text = std::move( subject );
-        if( !author.empty() )
+        std::wstring text( size_t( std::max( data.depth, 0 ) ) * 2, L' ' );
+        text += subject;
+        if( data.expandable )
         {
-            text += L" | ";
-            text += author;
+            text += data.expanded ? L" [expanded]" : L" [collapsed]";
         }
-        if( !date.empty() )
+        if( !data.visited )
         {
-            text += L" | ";
-            text += date;
-        }
-        if( replies > 1 )
-        {
-            text += L" | ";
-            text += std::to_wstring( replies - 1 );
-            text += replies == 2 ? L" reply" : L" replies";
-        }
-        if( !m_threadModel.WasVisited( message ) )
-        {
-            text += L" | unread";
+            text += L" [unread]";
         }
         return text;
     }
 
-    bool MessageHasChildren( uint32_t message ) const
+    uint32_t GetThreadMessage( int row ) const
     {
-        return m_archive && m_archive->GetChildren( message ).size != 0;
+        if( row < 0 || size_t( row ) >= m_threadModel.VisibleCount() ) return InvalidMessage;
+        return m_threadModel.MessageAt( size_t( row ) );
     }
 
-    uint32_t GetThreadMessage( HTREEITEM item ) const
+    void UpdateThreadRow( int row )
     {
-        if( !item ) return InvalidMessage;
+        const auto message = GetThreadMessage( row );
+        if( message == InvalidMessage ) return;
 
-        TVITEMW data = {};
-        data.mask = TVIF_PARAM;
-        data.hItem = item;
-        if( !TreeView_GetItem( m_threadList, &data ) ) return InvalidMessage;
-        return uint32_t( data.lParam );
-    }
+        LVITEMW item = {};
+        item.mask = LVIF_TEXT | LVIF_PARAM;
+        item.iItem = row;
+        item.iSubItem = 0;
 
-    HTREEITEM ThreadItemForMessage( uint32_t message ) const
-    {
-        return message < m_threadItems.size() ? m_threadItems[message] : nullptr;
-    }
+        const auto text = BuildThreadItemText( size_t( row ) );
+        item.pszText = const_cast<LPWSTR>( text.c_str() );
+        item.lParam = LPARAM( message );
 
-    HTREEITEM InsertThreadItem( HTREEITEM parent, uint32_t message )
-    {
-        const auto text = BuildThreadItemText( message );
-        TVINSERTSTRUCTW insert = {};
-        insert.hParent = parent;
-        insert.hInsertAfter = TVI_LAST;
-        insert.item.mask = TVIF_TEXT | TVIF_PARAM | TVIF_CHILDREN;
-        insert.item.pszText = const_cast<LPWSTR>( text.c_str() );
-        insert.item.lParam = LPARAM( message );
-        insert.item.cChildren = MessageHasChildren( message ) ? 1 : 0;
-
-        const auto item = TreeView_InsertItem( m_threadList, &insert );
-        if( message < m_threadItems.size() ) m_threadItems[message] = item;
-        return item;
-    }
-
-    void PopulateThreadChildren( HTREEITEM parentItem, uint32_t parentMessage )
-    {
-        if( !parentItem || parentMessage >= m_threadChildrenLoaded.size() || m_threadChildrenLoaded[parentMessage] ) return;
-
-        const auto subtreeEnd = parentMessage + m_archive->GetTotalChildrenCount( parentMessage );
-        auto child = parentMessage + 1;
-        while( child < subtreeEnd )
+        if( ListView_GetItemCount( m_threadList ) <= row )
         {
-            if( m_archive->GetParent( child ) == int32_t( parentMessage ) )
-            {
-                InsertThreadItem( parentItem, child );
-            }
-            child += m_archive->GetTotalChildrenCount( child );
+            ListView_InsertItem( m_threadList, &item );
         }
-        m_threadChildrenLoaded[parentMessage] = 1;
+        else
+        {
+            ListView_SetItem( m_threadList, &item );
+        }
+
+        auto author = Utf8ToWide( m_archive->GetRealName( message ) );
+        auto date = FormatDateTime( m_archive->GetDate( message ) );
+        ListView_SetItemText( m_threadList, row, 1, author.data() );
+        ListView_SetItemText( m_threadList, row, 2, date.data() );
     }
 
     void RebuildThreadTree()
     {
-        TreeView_DeleteAllItems( m_threadList );
-        m_threadItems.assign( m_archive ? m_archive->NumberOfMessages() : 0, nullptr );
-        m_threadChildrenLoaded.assign( m_archive ? m_archive->NumberOfMessages() : 0, 0 );
-
+        ListView_DeleteAllItems( m_threadList );
         if( !m_archive ) return;
 
-        const auto messageCount = uint32_t( m_archive->NumberOfMessages() );
-        uint32_t current = 0;
-        while( current < messageCount )
+        for( size_t row=0; row<m_threadModel.VisibleCount(); row++ )
         {
-            InsertThreadItem( TVI_ROOT, current );
-            current += m_archive->GetTotalChildrenCount( current );
+            UpdateThreadRow( int( row ) );
         }
     }
 
     void EnsureThreadPathVisible( uint32_t message )
     {
-        if( !m_archive || message == InvalidMessage || message >= m_threadItems.size() ) return;
+        if( !m_archive || message == InvalidMessage || message >= m_archive->NumberOfMessages() ) return;
 
         std::vector<uint32_t> path;
-        path.emplace_back( message );
         for( auto parent = m_archive->GetParent( message ); parent != -1; parent = m_archive->GetParent( uint32_t( parent ) ) )
         {
             path.emplace_back( uint32_t( parent ) );
         }
         std::reverse( path.begin(), path.end() );
 
-        for( size_t i=0; i<path.size(); i++ )
+        bool changed = false;
+        for( const auto current : path )
         {
-            const auto current = path[i];
-            const auto item = ThreadItemForMessage( current );
-            if( !item ) break;
-
-            if( i + 1 < path.size() )
+            if( m_threadModel.CanExpand( current ) && !m_threadModel.IsExpanded( current ) )
             {
-                PopulateThreadChildren( item, current );
-                TreeView_Expand( m_threadList, item, TVE_EXPAND );
-                if( m_threadModel.CanExpand( current ) && !m_threadModel.IsExpanded( current ) )
-                {
-                    m_threadModel.Expand( current, false );
-                }
+                changed |= m_threadModel.Expand( current, false );
             }
         }
 
-        if( const auto item = ThreadItemForMessage( message ) )
+        if( changed )
         {
-            TreeView_EnsureVisible( m_threadList, item );
+            RebuildThreadTree();
+        }
+
+        const auto row = m_threadModel.VisibleRowOf( message );
+        if( row >= 0 )
+        {
+            ListView_EnsureVisible( m_threadList, row, FALSE );
         }
     }
 
-    void ExpandThreadSubtree( HTREEITEM item, uint32_t message )
+    void ExpandThreadSubtree( uint32_t message )
     {
-        if( !item || !MessageHasChildren( message ) ) return;
-
-        PopulateThreadChildren( item, message );
-        TreeView_Expand( m_threadList, item, TVE_EXPAND );
-        if( m_threadModel.CanExpand( message ) && !m_threadModel.IsExpanded( message ) )
+        if( !m_threadModel.CanExpand( message ) ) return;
+        if( m_threadModel.Expand( message, true ) )
         {
-            m_threadModel.Expand( message, true );
-        }
-
-        const auto children = m_archive->GetChildren( message );
-        for( uint64_t i=0; i<children.size; i++ )
-        {
-            const auto child = children.ptr[i];
-            if( MessageHasChildren( child ) )
-            {
-                ExpandThreadSubtree( ThreadItemForMessage( child ), child );
-            }
+            RebuildThreadTree();
         }
     }
 
     void RefreshThreadItemText( uint32_t message )
     {
-        const auto item = ThreadItemForMessage( message );
-        if( !item ) return;
-
-        const auto text = BuildThreadItemText( message );
-        TVITEMW data = {};
-        data.mask = TVIF_TEXT | TVIF_CHILDREN;
-        data.hItem = item;
-        data.pszText = const_cast<LPWSTR>( text.c_str() );
-        data.cChildren = MessageHasChildren( message ) ? 1 : 0;
-        TreeView_SetItem( m_threadList, &data );
+        const auto row = m_threadModel.VisibleRowOf( message );
+        if( row >= 0 )
+        {
+            UpdateThreadRow( row );
+        }
     }
 
     void PostSyncThreadPreview()
@@ -1190,17 +1087,20 @@ private:
     {
         if( m_ignoreThreadSelection ) return;
 
-        const auto item = TreeView_GetSelection( m_threadList );
-        const auto message = GetThreadMessage( item );
+        const auto row = GetSingleSelectedRow( m_threadList );
+        const auto message = GetThreadMessage( row );
         if( message == InvalidMessage || message == m_selectedMessage ) return;
 
         DisplayMessage( message, true );
     }
 
-    void HandleThreadSelectionChanged( HTREEITEM item )
+    void HandleThreadSelectionChanged( const NMLISTVIEW* info )
     {
         if( m_ignoreThreadSelection ) return;
-        const auto message = GetThreadMessage( item );
+        if( ( info->uChanged & LVIF_STATE ) == 0 ) return;
+        if( ( info->uNewState & ( LVIS_SELECTED | LVIS_FOCUSED ) ) == 0 ) return;
+
+        const auto message = GetThreadMessage( info->iItem );
         if( message == InvalidMessage ) return;
         if( message != m_selectedMessage ) DisplayMessage( message, true );
     }
@@ -1216,30 +1116,10 @@ private:
         if( message != m_selectedMessage ) DisplayMessage( message, true );
     }
 
-    bool HandleThreadExpanding( HTREEITEM item, UINT action )
+    bool HandleThreadKeyDown( const NMLVKEYDOWN* info )
     {
-        const auto message = GetThreadMessage( item );
-        if( message == InvalidMessage ) return false;
-
-        if( ( action & TVE_EXPAND ) != 0 )
-        {
-            PopulateThreadChildren( item, message );
-            if( m_threadModel.CanExpand( message ) && !m_threadModel.IsExpanded( message ) )
-            {
-                m_threadModel.Expand( message, false );
-            }
-        }
-        else if( ( action & TVE_COLLAPSE ) != 0 )
-        {
-            if( m_threadModel.IsExpanded( message ) ) m_threadModel.Collapse( message );
-        }
-        return false;
-    }
-
-    bool HandleThreadKeyDown( const NMTVKEYDOWN* info )
-    {
-        const auto item = TreeView_GetSelection( m_threadList );
-        const auto message = GetThreadMessage( item );
+        const auto row = GetSingleSelectedRow( m_threadList );
+        const auto message = GetThreadMessage( row );
         if( message == InvalidMessage ) return false;
 
         switch( info->wVKey )
@@ -1247,46 +1127,49 @@ private:
         case VK_RIGHT:
             if( ( GetKeyState( VK_CONTROL ) & 0x8000 ) != 0 )
             {
-                ExpandThreadSubtree( item, message );
-                PostSyncThreadPreview();
+                ExpandThreadSubtree( message );
+                SelectThreadMessage( message, false );
                 return true;
             }
-            if( MessageHasChildren( message ) )
+            if( m_threadModel.CanExpand( message ) )
             {
-                PopulateThreadChildren( item, message );
-                const auto expanded = ( TreeView_GetItemState( m_threadList, item, TVIS_EXPANDED ) & TVIS_EXPANDED ) != 0;
-                if( !expanded )
+                if( !m_threadModel.IsExpanded( message ) )
                 {
-                    TreeView_Expand( m_threadList, item, TVE_EXPAND );
-                    if( m_threadModel.CanExpand( message ) && !m_threadModel.IsExpanded( message ) )
+                    if( m_threadModel.Expand( message, false ) )
                     {
-                        m_threadModel.Expand( message, false );
+                        RebuildThreadTree();
+                        SelectThreadMessage( message, false );
                     }
                 }
-                else if( const auto child = TreeView_GetChild( m_threadList, item ) )
+                else if( row + 1 < int( m_threadModel.VisibleCount() ) )
                 {
-                    TreeView_SelectItem( m_threadList, child );
-                    TreeView_EnsureVisible( m_threadList, child );
+                    const auto child = GetThreadMessage( row + 1 );
+                    if( child != InvalidMessage && m_archive->GetParent( child ) == int32_t( message ) )
+                    {
+                        m_ignoreThreadSelection = true;
+                        SetListViewSelection( m_threadList, row + 1 );
+                        m_ignoreThreadSelection = false;
+                        DisplayMessage( child, true );
+                    }
                 }
-                PostSyncThreadPreview();
                 return true;
             }
             break;
         case VK_LEFT:
         {
-            const auto expanded = ( TreeView_GetItemState( m_threadList, item, TVIS_EXPANDED ) & TVIS_EXPANDED ) != 0;
-            if( expanded && MessageHasChildren( message ) )
+            if( m_threadModel.IsExpanded( message ) )
             {
-                TreeView_Expand( m_threadList, item, TVE_COLLAPSE );
-                if( m_threadModel.IsExpanded( message ) ) m_threadModel.Collapse( message );
-                PostSyncThreadPreview();
+                if( m_threadModel.Collapse( message ) )
+                {
+                    RebuildThreadTree();
+                    SelectThreadMessage( message, false );
+                }
                 return true;
             }
-            if( const auto parent = TreeView_GetParent( m_threadList, item ) )
+            const auto parent = m_archive->GetParent( message );
+            if( parent != -1 )
             {
-                TreeView_SelectItem( m_threadList, parent );
-                TreeView_EnsureVisible( m_threadList, parent );
-                PostSyncThreadPreview();
+                SelectThreadMessage( uint32_t( parent ), false );
                 return true;
             }
             break;
@@ -1300,8 +1183,8 @@ private:
             PostSyncThreadPreview();
             break;
         case VK_MULTIPLY:
-            ExpandThreadSubtree( item, message );
-            PostSyncThreadPreview();
+            ExpandThreadSubtree( message );
+            SelectThreadMessage( message, false );
             return true;
         case VK_RETURN:
             SetFocus( m_bodyEdit );
@@ -1377,12 +1260,12 @@ private:
             L"Ctrl+1 / Ctrl+2  Switch between Browse and Search tabs\n"
             L"Ctrl+F  Focus search box\n"
             L"F5  Run search\n"
-            L"Ctrl+L / Ctrl+D / Ctrl+B  Focus thread tree, summary, or message body\n"
+            L"Ctrl+L / Ctrl+D / Ctrl+B  Focus thread list, summary, or message body\n"
             L"Ctrl+H  Toggle full raw headers in the body pane\n"
-            L"Right Arrow  Expand selected thread item\n"
+            L"Right Arrow  Expand selected thread item or move to first reply\n"
             L"Ctrl+Right Arrow  Expand selected subtree recursively\n"
             L"Left Arrow  Collapse selected thread item or move to parent\n"
-            L"Enter on thread tree  Move focus to message body\n"
+            L"Enter on thread list  Move focus to message body\n"
             L"Enter on search results  Open result in Browse tab",
             L"Keyboard Shortcuts",
             MB_OK | MB_ICONINFORMATION
@@ -1537,11 +1420,11 @@ private:
         if( message == InvalidMessage ) return;
 
         EnsureThreadPathVisible( message );
-        const auto item = ThreadItemForMessage( message );
-        if( !item ) return;
+        const auto row = m_threadModel.VisibleRowOf( message );
+        if( row < 0 ) return;
 
         m_ignoreThreadSelection = true;
-        TreeView_SelectItem( m_threadList, item );
+        SetListViewSelection( m_threadList, row );
         m_ignoreThreadSelection = false;
 
         DisplayMessage( message, true );
@@ -1748,16 +1631,16 @@ private:
 
     void FocusThreadList()
     {
-        auto item = m_selectedMessage != InvalidMessage ? ThreadItemForMessage( m_selectedMessage ) : nullptr;
-        if( !item )
+        auto row = m_selectedMessage != InvalidMessage ? m_threadModel.VisibleRowOf( m_selectedMessage ) : -1;
+        if( row < 0 )
         {
-            item = TreeView_GetSelection( m_threadList );
+            row = GetSingleSelectedRow( m_threadList );
         }
 
-        if( item )
+        if( row >= 0 )
         {
             m_ignoreThreadSelection = true;
-            AlignTreeItemForFocus( m_threadList, item );
+            SetListViewSelection( m_threadList, row );
             m_ignoreThreadSelection = false;
         }
 
@@ -1816,8 +1699,6 @@ private:
     ThreadListModel m_threadModel;
     SearchData m_searchData;
     ExpandingBuffer m_messageBuffer;
-    std::vector<HTREEITEM> m_threadItems;
-    std::vector<int8_t> m_threadChildrenLoaded;
 
     std::string m_initialPath;
     std::string m_sourcePath;
