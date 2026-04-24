@@ -374,13 +374,13 @@ LRESULT CALLBACK ThreadNavigatorSubclassProc( HWND hwnd, UINT msg, WPARAM wParam
     switch( msg )
     {
     case WM_GETDLGCODE:
-        if( wParam == VK_LEFT || wParam == VK_RIGHT || wParam == VK_UP || wParam == VK_DOWN || wParam == VK_HOME || wParam == VK_END || wParam == VK_PRIOR || wParam == VK_NEXT || wParam == VK_MULTIPLY || wParam == VK_RETURN )
+        if( wParam == VK_LEFT || wParam == VK_RIGHT || wParam == VK_MULTIPLY || wParam == VK_RETURN )
         {
             return DefSubclassProc( hwnd, msg, wParam, lParam ) | DLGC_WANTMESSAGE;
         }
         break;
     case WM_KEYDOWN:
-        if( wParam == VK_LEFT || wParam == VK_RIGHT || wParam == VK_UP || wParam == VK_DOWN || wParam == VK_HOME || wParam == VK_END || wParam == VK_PRIOR || wParam == VK_NEXT || wParam == VK_MULTIPLY || wParam == VK_RETURN )
+        if( wParam == VK_LEFT || wParam == VK_RIGHT || wParam == VK_MULTIPLY || wParam == VK_RETURN )
         {
             if( const auto root = GetAncestor( hwnd, GA_ROOT ) )
             {
@@ -838,8 +838,9 @@ private:
         GetClientRect( m_browsePanel, &panel );
         const int threadLabelHeight = Scale( 20 );
         const int threadGap = Scale( 6 );
+        const int threadListHeight = Scale( 28 );
         SetWindowPos( m_threadListLabel, nullptr, 0, 0, int( panel.right ), threadLabelHeight, SWP_NOZORDER );
-        SetWindowPos( m_threadList, nullptr, 0, threadLabelHeight + threadGap, int( panel.right ), std::max( 0, int( panel.bottom ) - threadLabelHeight - threadGap ), SWP_NOZORDER );
+        SetWindowPos( m_threadList, nullptr, 0, threadLabelHeight + threadGap, int( panel.right ), std::min( threadListHeight, std::max( 0, int( panel.bottom ) - threadLabelHeight - threadGap ) ), SWP_NOZORDER );
 
         RECT searchPanel = {};
         GetClientRect( m_searchPanel, &searchPanel );
@@ -897,6 +898,7 @@ private:
             }
             if( code == LBN_SELCHANGE )
             {
+                HandleThreadSelectionChanged( GetListBoxSelection( m_threadList ) );
                 return true;
             }
         }
@@ -1050,10 +1052,6 @@ private:
         {
             text += L" | no replies";
         }
-        if( !data.visited )
-        {
-            text += L" | unread";
-        }
         return text;
     }
 
@@ -1075,19 +1073,26 @@ private:
 
     void UpdateThreadNavigator()
     {
+        m_ignoreThreadSelection = true;
         SendMessageW( m_threadList, LB_RESETCONTENT, 0, 0 );
 
-        const auto row = CurrentThreadRow();
-        if( row < 0 )
+        if( m_threadModel.VisibleCount() == 0 )
         {
             SendMessageW( m_threadList, LB_ADDSTRING, 0, LPARAM( L"No thread selected." ) );
             SetListBoxSelection( m_threadList, 0 );
+            m_ignoreThreadSelection = false;
             return;
         }
 
-        const auto text = BuildThreadItemText( size_t( row ) );
-        SendMessageW( m_threadList, LB_ADDSTRING, 0, LPARAM( text.c_str() ) );
-        SetListBoxSelection( m_threadList, 0 );
+        for( size_t row=0; row<m_threadModel.VisibleCount(); row++ )
+        {
+            const auto text = BuildThreadItemText( row );
+            SendMessageW( m_threadList, LB_ADDSTRING, 0, LPARAM( text.c_str() ) );
+        }
+
+        const auto row = std::max( 0, CurrentThreadRow() );
+        SetListBoxSelection( m_threadList, row );
+        m_ignoreThreadSelection = false;
     }
 
     void RebuildThreadTree()
@@ -1134,10 +1139,7 @@ private:
 
     void RefreshThreadItemText( uint32_t message )
     {
-        if( message == m_selectedMessage )
-        {
-            UpdateThreadNavigator();
-        }
+        (void)message;
     }
 
     void PostSyncThreadPreview()
@@ -1151,6 +1153,16 @@ private:
         {
             DisplayMessage( GetThreadMessage( 0 ), true );
         }
+    }
+
+    void HandleThreadSelectionChanged( int row )
+    {
+        if( m_ignoreThreadSelection ) return;
+
+        const auto message = GetThreadMessage( row );
+        if( message == InvalidMessage || message == m_selectedMessage ) return;
+
+        DisplayMessage( message, true );
     }
 
     void HandleSearchSelectionChanged( const NMLISTVIEW* info )
@@ -1508,6 +1520,9 @@ private:
         const auto row = m_threadModel.VisibleRowOf( message );
         if( row < 0 ) return;
 
+        m_ignoreThreadSelection = true;
+        SetListBoxSelection( m_threadList, row );
+        m_ignoreThreadSelection = false;
         DisplayMessage( message, true );
         if( focus ) FocusThreadList();
     }
@@ -1541,8 +1556,7 @@ private:
         }
 
         UpdateMessagePane();
-        if( previous != InvalidMessage ) RefreshThreadItemText( previous );
-        RefreshThreadItemText( message );
+        (void)previous;
     }
 
     void UpdateMessagePane()
@@ -1712,6 +1726,10 @@ private:
 
     void FocusThreadList()
     {
+        const auto row = CurrentThreadRow();
+        m_ignoreThreadSelection = true;
+        SetListBoxSelection( m_threadList, row < 0 ? 0 : row );
+        m_ignoreThreadSelection = false;
         SetFocus( m_threadList );
     }
 
