@@ -82,6 +82,7 @@ enum : int
 enum : UINT
 {
     WM_APP_SYNC_THREAD_PREVIEW = WM_APP + 1,
+    WM_APP_THREAD_LIST_KEY = WM_APP + 2,
 };
 
 std::wstring Utf8ToWide( const std::string& text )
@@ -268,6 +269,39 @@ int GetSingleSelectedRow( HWND list )
     return ListView_GetNextItem( list, -1, LVNI_SELECTED );
 }
 
+void EnsureListBoxVisible( HWND list, int row )
+{
+    if( row < 0 ) return;
+
+    const auto top = int( SendMessageW( list, LB_GETTOPINDEX, 0, 0 ) );
+    RECT rect = {};
+    GetClientRect( list, &rect );
+
+    const auto itemHeight = std::max<int>( 1, int( SendMessageW( list, LB_GETITEMHEIGHT, 0, 0 ) ) );
+    const auto visibleCount = std::max<int>( 1, ( rect.bottom - rect.top ) / itemHeight );
+
+    if( row < top )
+    {
+        SendMessageW( list, LB_SETTOPINDEX, row, 0 );
+    }
+    else if( row >= top + visibleCount )
+    {
+        SendMessageW( list, LB_SETTOPINDEX, row - visibleCount + 1, 0 );
+    }
+}
+
+void SetListBoxSelection( HWND list, int row )
+{
+    SendMessageW( list, LB_SETCURSEL, row, 0 );
+    EnsureListBoxVisible( list, row );
+}
+
+int GetListBoxSelection( HWND list )
+{
+    const auto row = int( SendMessageW( list, LB_GETCURSEL, 0, 0 ) );
+    return row == LB_ERR ? -1 : row;
+}
+
 bool MoveFocusToNextDialogItem( HWND hwnd, bool previous )
 {
     const auto root = GetAncestor( hwnd, GA_ROOT );
@@ -336,6 +370,40 @@ LRESULT CALLBACK EscapeKeySubclassProc( HWND hwnd, UINT msg, WPARAM wParam, LPAR
         {
             HandleEscapeForControl( hwnd );
             return 0;
+        }
+        break;
+    default:
+        break;
+    }
+
+    return DefSubclassProc( hwnd, msg, wParam, lParam );
+}
+
+LRESULT CALLBACK ThreadListBoxSubclassProc( HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam, UINT_PTR, DWORD_PTR )
+{
+    switch( msg )
+    {
+    case WM_GETDLGCODE:
+        if( wParam == VK_LEFT || wParam == VK_RIGHT || wParam == VK_MULTIPLY || wParam == VK_RETURN )
+        {
+            return DefSubclassProc( hwnd, msg, wParam, lParam ) | DLGC_WANTMESSAGE;
+        }
+        break;
+    case WM_SETFOCUS:
+        if( const auto root = GetAncestor( hwnd, GA_ROOT ) )
+        {
+            PostMessageW( root, WM_APP_SYNC_THREAD_PREVIEW, 0, 0 );
+        }
+        break;
+    case WM_KEYDOWN:
+        if( wParam == VK_LEFT || wParam == VK_RIGHT || wParam == VK_MULTIPLY || wParam == VK_RETURN )
+        {
+            if( const auto root = GetAncestor( hwnd, GA_ROOT ) )
+            {
+                const auto ctrlDown = ( GetKeyState( VK_CONTROL ) & 0x8000 ) != 0;
+                PostMessageW( root, WM_APP_THREAD_LIST_KEY, wParam, ctrlDown ? 1 : 0 );
+                return 0;
+            }
         }
         break;
     default:
@@ -462,6 +530,9 @@ private:
             break;
         case WM_APP_SYNC_THREAD_PREVIEW:
             SyncSelectedThreadPreview();
+            return 0;
+        case WM_APP_THREAD_LIST_KEY:
+            HandleThreadKeyDown( UINT( wParam ), lParam != 0 );
             return 0;
         case WM_SETFOCUS:
             FocusPrimaryControl();
@@ -590,9 +661,9 @@ private:
 
         m_threadList = CreateWindowExW(
             WS_EX_CLIENTEDGE,
-            WC_LISTVIEWW,
+            L"LISTBOX",
             L"Thread list",
-            WS_CHILD | WS_VISIBLE | WS_TABSTOP | LVS_REPORT | LVS_SHOWSELALWAYS | LVS_SINGLESEL,
+            WS_CHILD | WS_VISIBLE | WS_TABSTOP | WS_VSCROLL | LBS_NOTIFY | LBS_NOINTEGRALHEIGHT,
             0,
             0,
             100,
@@ -603,6 +674,7 @@ private:
             nullptr
         );
         SetWindowSubclass( m_threadList, &EscapeKeySubclassProc, 0, 0 );
+        SetWindowSubclass( m_threadList, &ThreadListBoxSubclassProc, 0, 0 );
 
         m_searchLabel = CreateWindowExW( 0, L"STATIC", L"Search query:", WS_CHILD | WS_VISIBLE, 0, 0, 100, 24, m_searchPanel, reinterpret_cast<HMENU>( IDC_SEARCH_LABEL ), m_instance, nullptr );
         m_searchEdit = CreateWindowExW( WS_EX_CLIENTEDGE, L"EDIT", L"", WS_CHILD | WS_VISIBLE | WS_TABSTOP | ES_AUTOHSCROLL, 0, 0, 100, 24, m_searchPanel, reinterpret_cast<HMENU>( IDC_SEARCH_EDIT ), m_instance, nullptr );
@@ -705,12 +777,7 @@ private:
             ListView_SetUnicodeFormat( list, TRUE );
             ListView_SetExtendedListViewStyleEx( list, LVS_EX_FULLROWSELECT | LVS_EX_DOUBLEBUFFER, LVS_EX_FULLROWSELECT | LVS_EX_DOUBLEBUFFER );
         };
-        apply( m_threadList );
         apply( m_resultsList );
-
-        AddColumn( m_threadList, 0, L"Subject", 520 );
-        AddColumn( m_threadList, 1, L"Author", 180 );
-        AddColumn( m_threadList, 2, L"Date", 160 );
 
         AddColumn( m_resultsList, 0, L"Subject", 420 );
         AddColumn( m_resultsList, 1, L"Author", 180 );
@@ -833,6 +900,21 @@ private:
             return true;
         }
 
+        if( control == m_threadList )
+        {
+            switch( code )
+            {
+            case LBN_SELCHANGE:
+                HandleThreadSelectionChanged( GetListBoxSelection( m_threadList ) );
+                return true;
+            case LBN_DBLCLK:
+                SetFocus( m_bodyEdit );
+                return true;
+            default:
+                break;
+            }
+        }
+
         const auto focus = GetFocus();
 
         switch( id )
@@ -913,28 +995,6 @@ private:
             return true;
         }
 
-        if( hdr->idFrom == IDC_THREAD_LIST )
-        {
-            switch( hdr->code )
-            {
-            case LVN_ITEMCHANGED:
-                HandleThreadSelectionChanged( reinterpret_cast<const NMLISTVIEW*>( hdr ) );
-                return true;
-            case LVN_KEYDOWN:
-                return HandleThreadKeyDown( reinterpret_cast<const NMLVKEYDOWN*>( hdr ) );
-            case NM_CLICK:
-            case NM_SETFOCUS:
-                PostSyncThreadPreview();
-                break;
-            case NM_DBLCLK:
-            case NM_RETURN:
-                SetFocus( m_bodyEdit );
-                return true;
-            default:
-                break;
-            }
-        }
-
         if( hdr->idFrom == IDC_RESULTS_LIST )
         {
             switch( hdr->code )
@@ -993,39 +1053,49 @@ private:
         const auto message = GetThreadMessage( row );
         if( message == InvalidMessage ) return;
 
-        LVITEMW item = {};
-        item.mask = LVIF_TEXT | LVIF_PARAM;
-        item.iItem = row;
-        item.iSubItem = 0;
-
         const auto text = BuildThreadItemText( size_t( row ) );
-        item.pszText = const_cast<LPWSTR>( text.c_str() );
-        item.lParam = LPARAM( message );
+        const auto selectedRow = GetListBoxSelection( m_threadList );
+        const auto topIndex = int( SendMessageW( m_threadList, LB_GETTOPINDEX, 0, 0 ) );
 
-        if( ListView_GetItemCount( m_threadList ) <= row )
+        if( int( SendMessageW( m_threadList, LB_GETCOUNT, 0, 0 ) ) <= row )
         {
-            ListView_InsertItem( m_threadList, &item );
+            const auto inserted = int( SendMessageW( m_threadList, LB_INSERTSTRING, row, LPARAM( text.c_str() ) ) );
+            SendMessageW( m_threadList, LB_SETITEMDATA, inserted, LPARAM( message ) );
         }
         else
         {
-            ListView_SetItem( m_threadList, &item );
+            SendMessageW( m_threadList, LB_DELETESTRING, row, 0 );
+            const auto inserted = int( SendMessageW( m_threadList, LB_INSERTSTRING, row, LPARAM( text.c_str() ) ) );
+            SendMessageW( m_threadList, LB_SETITEMDATA, inserted, LPARAM( message ) );
         }
 
-        auto author = Utf8ToWide( m_archive->GetRealName( message ) );
-        auto date = FormatDateTime( m_archive->GetDate( message ) );
-        ListView_SetItemText( m_threadList, row, 1, author.data() );
-        ListView_SetItemText( m_threadList, row, 2, date.data() );
+        if( selectedRow == row )
+        {
+            SendMessageW( m_threadList, LB_SETCURSEL, row, 0 );
+        }
+        if( topIndex != LB_ERR )
+        {
+            SendMessageW( m_threadList, LB_SETTOPINDEX, topIndex, 0 );
+        }
     }
 
     void RebuildThreadTree()
     {
-        ListView_DeleteAllItems( m_threadList );
-        if( !m_archive ) return;
+        SendMessageW( m_threadList, WM_SETREDRAW, FALSE, 0 );
+        SendMessageW( m_threadList, LB_RESETCONTENT, 0, 0 );
+        if( !m_archive )
+        {
+            SendMessageW( m_threadList, WM_SETREDRAW, TRUE, 0 );
+            InvalidateRect( m_threadList, nullptr, TRUE );
+            return;
+        }
 
         for( size_t row=0; row<m_threadModel.VisibleCount(); row++ )
         {
             UpdateThreadRow( int( row ) );
         }
+        SendMessageW( m_threadList, WM_SETREDRAW, TRUE, 0 );
+        InvalidateRect( m_threadList, nullptr, TRUE );
     }
 
     void EnsureThreadPathVisible( uint32_t message )
@@ -1056,7 +1126,7 @@ private:
         const auto row = m_threadModel.VisibleRowOf( message );
         if( row >= 0 )
         {
-            ListView_EnsureVisible( m_threadList, row, FALSE );
+            EnsureListBoxVisible( m_threadList, row );
         }
     }
 
@@ -1087,20 +1157,17 @@ private:
     {
         if( m_ignoreThreadSelection ) return;
 
-        const auto row = GetSingleSelectedRow( m_threadList );
+        const auto row = GetListBoxSelection( m_threadList );
         const auto message = GetThreadMessage( row );
         if( message == InvalidMessage || message == m_selectedMessage ) return;
 
         DisplayMessage( message, true );
     }
 
-    void HandleThreadSelectionChanged( const NMLISTVIEW* info )
+    void HandleThreadSelectionChanged( int row )
     {
         if( m_ignoreThreadSelection ) return;
-        if( ( info->uChanged & LVIF_STATE ) == 0 ) return;
-        if( ( info->uNewState & ( LVIS_SELECTED | LVIS_FOCUSED ) ) == 0 ) return;
-
-        const auto message = GetThreadMessage( info->iItem );
+        const auto message = GetThreadMessage( row );
         if( message == InvalidMessage ) return;
         if( message != m_selectedMessage ) DisplayMessage( message, true );
     }
@@ -1116,16 +1183,16 @@ private:
         if( message != m_selectedMessage ) DisplayMessage( message, true );
     }
 
-    bool HandleThreadKeyDown( const NMLVKEYDOWN* info )
+    bool HandleThreadKeyDown( UINT key, bool ctrlDown )
     {
-        const auto row = GetSingleSelectedRow( m_threadList );
+        const auto row = GetListBoxSelection( m_threadList );
         const auto message = GetThreadMessage( row );
         if( message == InvalidMessage ) return false;
 
-        switch( info->wVKey )
+        switch( key )
         {
         case VK_RIGHT:
-            if( ( GetKeyState( VK_CONTROL ) & 0x8000 ) != 0 )
+            if( ctrlDown )
             {
                 ExpandThreadSubtree( message );
                 SelectThreadMessage( message, false );
@@ -1147,7 +1214,7 @@ private:
                     if( child != InvalidMessage && m_archive->GetParent( child ) == int32_t( message ) )
                     {
                         m_ignoreThreadSelection = true;
-                        SetListViewSelection( m_threadList, row + 1 );
+                        SetListBoxSelection( m_threadList, row + 1 );
                         m_ignoreThreadSelection = false;
                         DisplayMessage( child, true );
                     }
@@ -1424,7 +1491,7 @@ private:
         if( row < 0 ) return;
 
         m_ignoreThreadSelection = true;
-        SetListViewSelection( m_threadList, row );
+        SetListBoxSelection( m_threadList, row );
         m_ignoreThreadSelection = false;
 
         DisplayMessage( message, true );
@@ -1634,13 +1701,13 @@ private:
         auto row = m_selectedMessage != InvalidMessage ? m_threadModel.VisibleRowOf( m_selectedMessage ) : -1;
         if( row < 0 )
         {
-            row = GetSingleSelectedRow( m_threadList );
+            row = GetListBoxSelection( m_threadList );
         }
 
         if( row >= 0 )
         {
             m_ignoreThreadSelection = true;
-            SetListViewSelection( m_threadList, row );
+            SetListBoxSelection( m_threadList, row );
             m_ignoreThreadSelection = false;
         }
 
