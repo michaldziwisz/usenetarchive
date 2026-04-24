@@ -341,6 +341,20 @@ LRESULT CALLBACK FocusTrackingSubclassProc( HWND hwnd, UINT msg, WPARAM wParam, 
     return DefSubclassProc( hwnd, msg, wParam, lParam );
 }
 
+LRESULT CALLBACK ContextMenuForwardingSubclassProc( HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam, UINT_PTR, DWORD_PTR )
+{
+    if( msg == WM_CONTEXTMENU )
+    {
+        if( const auto root = GetAncestor( hwnd, GA_ROOT ) )
+        {
+            SendMessageW( root, WM_CONTEXTMENU, WPARAM( hwnd ), lParam );
+            return 0;
+        }
+    }
+
+    return DefSubclassProc( hwnd, msg, wParam, lParam );
+}
+
 LRESULT CALLBACK ReadOnlyPaneSubclassProc( HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam, UINT_PTR, DWORD_PTR )
 {
     switch( msg )
@@ -728,6 +742,7 @@ private:
         SetWindowSubclass( m_threadList, &EscapeKeySubclassProc, 0, 0 );
         SetWindowSubclass( m_threadList, &ThreadNavigatorSubclassProc, 0, 0 );
         SetWindowSubclass( m_threadList, &FocusTrackingSubclassProc, 0, 0 );
+        SetWindowSubclass( m_threadList, &ContextMenuForwardingSubclassProc, 0, 0 );
 
         m_searchLabel = CreateWindowExW( 0, L"STATIC", L"Search query:", WS_CHILD | WS_VISIBLE, 0, 0, 100, 24, m_searchPanel, reinterpret_cast<HMENU>( IDC_SEARCH_LABEL ), m_instance, nullptr );
         m_searchEdit = CreateWindowExW( WS_EX_CLIENTEDGE, L"EDIT", L"", WS_CHILD | WS_VISIBLE | WS_TABSTOP | ES_AUTOHSCROLL, 0, 0, 100, 24, m_searchPanel, reinterpret_cast<HMENU>( IDC_SEARCH_EDIT ), m_instance, nullptr );
@@ -772,6 +787,7 @@ private:
         SendMessageW( m_detailsEdit, EM_SETREADONLY, TRUE, 0 );
         SetWindowSubclass( m_detailsEdit, &ReadOnlyPaneSubclassProc, 0, 0 );
         SetWindowSubclass( m_detailsEdit, &FocusTrackingSubclassProc, 0, 0 );
+        SetWindowSubclass( m_detailsEdit, &ContextMenuForwardingSubclassProc, 0, 0 );
 
         m_bodyLabel = CreateWindowExW( 0, L"STATIC", L"Message body", WS_CHILD | WS_VISIBLE, 0, 0, 100, 24, m_hwnd, reinterpret_cast<HMENU>( IDC_BODY_LABEL ), m_instance, nullptr );
         m_bodyEdit = CreateWindowExW(
@@ -793,6 +809,7 @@ private:
         SendMessageW( m_bodyEdit, EM_SETEVENTMASK, 0, ENM_LINK );
         SetWindowSubclass( m_bodyEdit, &ReadOnlyPaneSubclassProc, 0, 0 );
         SetWindowSubclass( m_bodyEdit, &FocusTrackingSubclassProc, 0, 0 );
+        SetWindowSubclass( m_bodyEdit, &ContextMenuForwardingSubclassProc, 0, 0 );
 
         m_status = CreateWindowExW(
             0,
@@ -1057,6 +1074,19 @@ private:
         if( !target || target == m_hwnd )
         {
             target = GetFocus();
+        }
+
+        if( target && target != m_threadList && IsChild( m_threadList, target ) )
+        {
+            target = m_threadList;
+        }
+        else if( target && target != m_detailsEdit && IsChild( m_detailsEdit, target ) )
+        {
+            target = m_detailsEdit;
+        }
+        else if( target && target != m_bodyEdit && IsChild( m_bodyEdit, target ) )
+        {
+            target = m_bodyEdit;
         }
 
         if( target != m_threadList && target != m_detailsEdit && target != m_bodyEdit )
