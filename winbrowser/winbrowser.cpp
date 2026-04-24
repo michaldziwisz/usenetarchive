@@ -1122,16 +1122,20 @@ private:
     void UpdateThreadNavigator()
     {
         m_ignoreThreadSelection = true;
+        SendMessageW( m_threadList, WM_SETREDRAW, FALSE, 0 );
         SendMessageW( m_threadList, LB_RESETCONTENT, 0, 0 );
 
         if( m_threadModel.VisibleCount() == 0 )
         {
             SendMessageW( m_threadList, LB_ADDSTRING, 0, LPARAM( L"No thread selected." ) );
             SetListBoxSelection( m_threadList, 0 );
+            SendMessageW( m_threadList, WM_SETREDRAW, TRUE, 0 );
+            InvalidateRect( m_threadList, nullptr, TRUE );
             m_ignoreThreadSelection = false;
             return;
         }
 
+        SendMessageW( m_threadList, LB_INITSTORAGE, WPARAM( m_threadModel.VisibleCount() ), LPARAM( m_threadModel.VisibleCount() * 128 ) );
         for( size_t row=0; row<m_threadModel.VisibleCount(); row++ )
         {
             const auto text = BuildThreadItemText( row );
@@ -1140,7 +1144,83 @@ private:
 
         const auto row = std::max( 0, CurrentThreadRow() );
         SetListBoxSelection( m_threadList, row );
+        SendMessageW( m_threadList, WM_SETREDRAW, TRUE, 0 );
+        InvalidateRect( m_threadList, nullptr, TRUE );
         m_ignoreThreadSelection = false;
+    }
+
+    void ReplaceThreadRowText( int row )
+    {
+        if( row < 0 || size_t( row ) >= m_threadModel.VisibleCount() ) return;
+
+        const auto text = BuildThreadItemText( size_t( row ) );
+        SendMessageW( m_threadList, LB_DELETESTRING, row, 0 );
+        SendMessageW( m_threadList, LB_INSERTSTRING, row, LPARAM( text.c_str() ) );
+    }
+
+    void InsertThreadRows( int startRow, size_t count )
+    {
+        if( count == 0 ) return;
+
+        SendMessageW( m_threadList, LB_INITSTORAGE, WPARAM( m_threadModel.VisibleCount() ), LPARAM( count * 128 ) );
+        for( size_t offset=0; offset<count; offset++ )
+        {
+            const auto row = startRow + int( offset );
+            const auto text = BuildThreadItemText( size_t( row ) );
+            SendMessageW( m_threadList, LB_INSERTSTRING, row, LPARAM( text.c_str() ) );
+        }
+    }
+
+    void DeleteThreadRows( int startRow, size_t count )
+    {
+        for( size_t offset=0; offset<count; offset++ )
+        {
+            SendMessageW( m_threadList, LB_DELETESTRING, startRow, 0 );
+        }
+    }
+
+    bool ExpandThreadItem( uint32_t message, bool recursive )
+    {
+        if( !m_threadModel.CanExpand( message ) ) return false;
+
+        const auto row = m_threadModel.VisibleRowOf( message );
+        if( row < 0 ) return false;
+
+        const auto previousVisibleCount = m_threadModel.VisibleCount();
+        if( !m_threadModel.Expand( message, recursive ) ) return false;
+
+        const auto insertedCount = m_threadModel.VisibleCount() - previousVisibleCount;
+        m_ignoreThreadSelection = true;
+        SendMessageW( m_threadList, WM_SETREDRAW, FALSE, 0 );
+        ReplaceThreadRowText( row );
+        InsertThreadRows( row + 1, insertedCount );
+        SetListBoxSelection( m_threadList, CurrentThreadRow() );
+        SendMessageW( m_threadList, WM_SETREDRAW, TRUE, 0 );
+        InvalidateRect( m_threadList, nullptr, TRUE );
+        m_ignoreThreadSelection = false;
+        return true;
+    }
+
+    bool CollapseThreadItem( uint32_t message )
+    {
+        if( !m_threadModel.IsExpanded( message ) ) return false;
+
+        const auto row = m_threadModel.VisibleRowOf( message );
+        if( row < 0 ) return false;
+
+        const auto previousVisibleCount = m_threadModel.VisibleCount();
+        if( !m_threadModel.Collapse( message ) ) return false;
+
+        const auto removedCount = previousVisibleCount - m_threadModel.VisibleCount();
+        m_ignoreThreadSelection = true;
+        SendMessageW( m_threadList, WM_SETREDRAW, FALSE, 0 );
+        DeleteThreadRows( row + 1, removedCount );
+        ReplaceThreadRowText( row );
+        SetListBoxSelection( m_threadList, CurrentThreadRow() );
+        SendMessageW( m_threadList, WM_SETREDRAW, TRUE, 0 );
+        InvalidateRect( m_threadList, nullptr, TRUE );
+        m_ignoreThreadSelection = false;
+        return true;
     }
 
     void RebuildThreadTree()
@@ -1159,30 +1239,18 @@ private:
         }
         std::reverse( path.begin(), path.end() );
 
-        bool changed = false;
         for( const auto current : path )
         {
             if( m_threadModel.CanExpand( current ) && !m_threadModel.IsExpanded( current ) )
             {
-                changed |= m_threadModel.Expand( current, false );
+                ExpandThreadItem( current, false );
             }
         }
-
-        if( changed )
-        {
-            RebuildThreadTree();
-        }
-
-        UpdateThreadNavigator();
     }
 
     void ExpandThreadSubtree( uint32_t message )
     {
-        if( !m_threadModel.CanExpand( message ) ) return;
-        if( m_threadModel.Expand( message, true ) )
-        {
-            RebuildThreadTree();
-        }
+        ExpandThreadItem( message, true );
     }
 
     void RefreshThreadItemText( uint32_t message )
@@ -1291,9 +1359,8 @@ private:
             {
                 if( !m_threadModel.IsExpanded( message ) )
                 {
-                    if( m_threadModel.Expand( message, false ) )
+                    if( ExpandThreadItem( message, false ) )
                     {
-                        RebuildThreadTree();
                         SelectThreadMessage( message, false );
                     }
                 }
@@ -1312,9 +1379,8 @@ private:
         {
             if( m_threadModel.IsExpanded( message ) )
             {
-                if( m_threadModel.Collapse( message ) )
+                if( CollapseThreadItem( message ) )
                 {
-                    RebuildThreadTree();
                     SelectThreadMessage( message, false );
                 }
                 return true;
