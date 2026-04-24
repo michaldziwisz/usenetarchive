@@ -82,7 +82,6 @@ enum : int
 enum : UINT
 {
     WM_APP_SYNC_THREAD_PREVIEW = WM_APP + 1,
-    WM_APP_REASSERT_TREE_FOCUS = WM_APP + 2,
 };
 
 std::wstring Utf8ToWide( const std::string& text )
@@ -388,14 +387,6 @@ LRESULT CALLBACK ThreadTreeFocusSubclassProc( HWND hwnd, UINT msg, WPARAM wParam
         if( const auto item = TreeView_GetSelection( hwnd ) )
         {
             ReassertTreeItemFocus( hwnd, item );
-            PostMessageW( hwnd, WM_APP_REASSERT_TREE_FOCUS, 0, LPARAM( item ) );
-        }
-        break;
-    case WM_APP_REASSERT_TREE_FOCUS:
-        if( GetFocus() == hwnd )
-        {
-            ReassertTreeItemFocus( hwnd, HTREEITEM( lParam ) );
-            return 0;
         }
         break;
     default:
