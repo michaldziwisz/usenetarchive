@@ -562,6 +562,9 @@ private:
             return 0;
         case WM_APP_OPEN_BODY_LINK:
             return TryOpenFocusedBodyLink() ? 1 : 0;
+        case WM_CONTEXTMENU:
+            if( HandleContextMenu( reinterpret_cast<HWND>( wParam ), { GET_X_LPARAM( lParam ), GET_Y_LPARAM( lParam ) } ) ) return 0;
+            break;
         case WM_SETFOCUS:
             if( m_lastFocusedControl && IsWindow( m_lastFocusedControl ) && IsWindowVisible( m_lastFocusedControl ) && IsWindowEnabled( m_lastFocusedControl ) )
             {
@@ -1045,6 +1048,60 @@ private:
         return false;
     }
 
+    bool HandleContextMenu( HWND source, POINT screenPoint )
+    {
+        HWND target = source;
+        if( !target || target == m_hwnd )
+        {
+            target = GetFocus();
+        }
+
+        if( target != m_threadList && target != m_detailsEdit && target != m_bodyEdit )
+        {
+            return false;
+        }
+
+        HMENU menu = CreatePopupMenu();
+        if( !menu ) return false;
+
+        AppendMenuW( menu, MF_STRING, ID_NAV_EXPAND_THREAD, L"Expand Current Thread\tCtrl+Shift+Right" );
+        AppendMenuW( menu, MF_STRING, ID_NAV_COLLAPSE_THREAD, L"Collapse Current Thread\tCtrl+Shift+Left" );
+        AppendMenuW( menu, MF_SEPARATOR, 0, nullptr );
+        AppendMenuW( menu, MF_STRING, ID_NAV_PREVIOUS_IN_THREAD, L"Previous Article In Thread\tAlt+Up" );
+        AppendMenuW( menu, MF_STRING, ID_NAV_NEXT_IN_THREAD, L"Next Article In Thread\tAlt+Down" );
+
+        EnableMenuItem( menu, ID_NAV_EXPAND_THREAD, MF_BYCOMMAND | ( CanExpandCurrentThreadRecursively() ? MF_ENABLED : MF_GRAYED ) );
+        EnableMenuItem( menu, ID_NAV_COLLAPSE_THREAD, MF_BYCOMMAND | ( CanCollapseCurrentThreadToRoot() ? MF_ENABLED : MF_GRAYED ) );
+        EnableMenuItem( menu, ID_NAV_PREVIOUS_IN_THREAD, MF_BYCOMMAND | ( CanNavigateRelativeInThread( -1 ) ? MF_ENABLED : MF_GRAYED ) );
+        EnableMenuItem( menu, ID_NAV_NEXT_IN_THREAD, MF_BYCOMMAND | ( CanNavigateRelativeInThread( 1 ) ? MF_ENABLED : MF_GRAYED ) );
+
+        if( screenPoint.x == -1 && screenPoint.y == -1 )
+        {
+            RECT rect = {};
+            GetWindowRect( target, &rect );
+            screenPoint.x = rect.left + ( rect.right - rect.left ) / 2;
+            screenPoint.y = rect.top + ( rect.bottom - rect.top ) / 2;
+        }
+
+        const auto command = TrackPopupMenu(
+            menu,
+            TPM_RETURNCMD | TPM_RIGHTBUTTON | TPM_NONOTIFY,
+            screenPoint.x,
+            screenPoint.y,
+            0,
+            m_hwnd,
+            nullptr
+        );
+
+        DestroyMenu( menu );
+
+        if( command != 0 )
+        {
+            SendMessageW( m_hwnd, WM_COMMAND, MAKEWPARAM( command, 0 ), 0 );
+        }
+        return true;
+    }
+
     bool HandleNotify( NMHDR* hdr )
     {
         if( hdr->idFrom == IDC_MAIN_TAB && hdr->code == TCN_SELCHANGE )
@@ -1240,9 +1297,15 @@ private:
         const auto root = GetThreadRoot( m_selectedMessage );
         if( root == InvalidMessage ) return false;
 
-        ExpandThreadSubtree( root );
+        ExpandThreadRecursively( root );
         SelectThreadMessage( m_selectedMessage == InvalidMessage ? root : m_selectedMessage, false );
         return true;
+    }
+
+    bool CanExpandCurrentThreadRecursively() const
+    {
+        const auto root = GetThreadRoot( m_selectedMessage );
+        return root != InvalidMessage && m_threadModel.CanExpand( root );
     }
 
     bool CollapseThreadItem( uint32_t message )
@@ -1282,9 +1345,33 @@ private:
         return true;
     }
 
+    bool CanCollapseCurrentThreadToRoot() const
+    {
+        const auto root = GetThreadRoot( m_selectedMessage );
+        return root != InvalidMessage && m_threadModel.IsExpanded( root );
+    }
+
     void RebuildThreadTree()
     {
         UpdateThreadNavigator();
+    }
+
+    bool ExpandThreadRecursively( uint32_t message )
+    {
+        if( !m_archive || !m_threadModel.CanExpand( message ) ) return false;
+
+        auto changed = false;
+        if( !m_threadModel.IsExpanded( message ) )
+        {
+            changed |= ExpandThreadItem( message, false );
+        }
+
+        const auto children = m_archive->GetChildren( message );
+        for( uint64_t i=0; i<children.size; i++ )
+        {
+            changed |= ExpandThreadRecursively( children.ptr[i] );
+        }
+        return changed;
     }
 
     void EnsureThreadPathVisible( uint32_t message )
@@ -1357,6 +1444,19 @@ private:
 
         SelectThreadMessage( uint32_t( target ), false );
         return true;
+    }
+
+    bool CanNavigateRelativeInThread( int delta ) const
+    {
+        if( !m_archive || m_selectedMessage == InvalidMessage || delta == 0 ) return false;
+
+        const auto root = GetThreadRoot( m_selectedMessage );
+        if( root == InvalidMessage ) return false;
+
+        const auto start = int64_t( root );
+        const auto end = start + int64_t( m_archive->GetTotalChildrenCount( root ) );
+        const auto target = int64_t( m_selectedMessage ) + delta;
+        return target >= start && target < end;
     }
 
     void HandleSearchSelectionChanged( const NMLISTVIEW* info )
