@@ -48,6 +48,7 @@ endif()
 add_library(icu INTERFACE)
 if(WIN32)
     find_package(ICU REQUIRED COMPONENTS uc i18n data)
+    find_package(LibLZMA REQUIRED)
     target_link_libraries(icu INTERFACE ICU::uc ICU::i18n ICU::data)
 else()
     pkg_check_modules(ICU REQUIRED icu-uc)
@@ -227,10 +228,11 @@ endif()
 
 if(WIN32)
     add_executable(winbrowser WIN32
+        winbrowser/ArchiveDownloader.cpp
         winbrowser/ThreadListModel.cpp
         winbrowser/winbrowser.cpp
     )
-    target_link_libraries(winbrowser PRIVATE comctl32 ole32 shell32 uuid libuat common icu zstd)
+    target_link_libraries(winbrowser PRIVATE comctl32 ole32 shell32 uuid winhttp LibLZMA::LibLZMA libuat common icu zstd)
     if(MINGW)
         target_link_options(winbrowser PRIVATE -municode)
     endif()

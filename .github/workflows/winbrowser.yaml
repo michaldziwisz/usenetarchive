@@ -24,6 +24,7 @@ jobs:
             mingw-w64-x86_64-cmake
             mingw-w64-x86_64-ninja
             mingw-w64-x86_64-icu
+            mingw-w64-x86_64-xz
 
       - name: Configure
         shell: msys2 {0}
@@ -67,6 +68,7 @@ jobs:
             winbrowser.exe <archive-path>
 
           You can also launch it without arguments and use File -> Open.
+          Use File -> Download Archive to fetch and unpack group archives from usenet.nereid.pl.
 
           Keep the DLL files from this archive in the same folder as winbrowser.exe.
           EOF

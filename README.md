@@ -36,6 +36,9 @@ summary, and message body using normal Windows accessibility support.
 Current scope:
 
 - Open packaged archive files, unpacked archive directories, and galaxy directories.
+- Download Polish Usenet group archives directly from `https://usenet.nereid.pl/`,
+  unpack them from `*.xz`, open them automatically, and keep only the unpacked
+  archive in the configured working folder.
 - Browse large archives through a virtualized thread list.
 - Search the archive with the existing `libuat` search engine.
 - Read messages in a normal windowed interface with keyboard shortcuts for focus,

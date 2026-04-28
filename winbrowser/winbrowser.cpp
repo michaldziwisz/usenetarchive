@@ -38,6 +38,7 @@
 #include "../libuat/PersistentStorage.hpp"
 #include "../libuat/SearchEngine.hpp"
 
+#include "ArchiveDownloader.hpp"
 #include "ThreadListModel.hpp"
 
 namespace
@@ -74,6 +75,7 @@ enum : int
 {
     ID_FILE_OPEN_FILE = 40001,
     ID_FILE_OPEN_FOLDER,
+    ID_FILE_DOWNLOAD_ARCHIVE,
     ID_FILE_EXIT,
     ID_VIEW_BROWSE,
     ID_VIEW_SEARCH,
@@ -87,6 +89,8 @@ enum : int
     ID_NAV_NEXT_IN_THREAD,
     ID_SEARCH_FOCUS,
     ID_SEARCH_EXECUTE,
+    ID_TOOLS_DOWNLOAD_ARCHIVE,
+    ID_TOOLS_DOWNLOAD_SETTINGS,
     ID_TOOLS_VERIFY_ARCHIVE,
     ID_TOOLS_PACK_ARCHIVE,
     ID_TOOLS_UNPACK_ARCHIVE,
@@ -752,6 +756,7 @@ private:
         const ACCEL entries[] = {
             { FCONTROL | FVIRTKEY, 'O', ID_FILE_OPEN_FILE },
             { FCONTROL | FSHIFT | FVIRTKEY, 'O', ID_FILE_OPEN_FOLDER },
+            { FCONTROL | FSHIFT | FVIRTKEY, 'A', ID_FILE_DOWNLOAD_ARCHIVE },
             { FCONTROL | FVIRTKEY, '1', ID_VIEW_BROWSE },
             { FCONTROL | FVIRTKEY, '2', ID_VIEW_SEARCH },
             { FCONTROL | FVIRTKEY, 'F', ID_SEARCH_FOCUS },
@@ -775,6 +780,7 @@ private:
         HMENU fileMenu = CreatePopupMenu();
         AppendMenuW( fileMenu, MF_STRING, ID_FILE_OPEN_FILE, L"&Open File...\tCtrl+O" );
         AppendMenuW( fileMenu, MF_STRING, ID_FILE_OPEN_FOLDER, L"Open &Folder...\tCtrl+Shift+O" );
+        AppendMenuW( fileMenu, MF_STRING, ID_FILE_DOWNLOAD_ARCHIVE, L"&Download Archive...\tCtrl+Shift+A" );
         AppendMenuW( fileMenu, MF_SEPARATOR, 0, nullptr );
         AppendMenuW( fileMenu, MF_STRING, ID_FILE_EXIT, L"E&xit" );
         AppendMenuW( menu, MF_POPUP, UINT_PTR( fileMenu ), L"&File" );
@@ -798,6 +804,9 @@ private:
         AppendMenuW( menu, MF_POPUP, UINT_PTR( navMenu ), L"&Navigate" );
 
         HMENU toolsMenu = CreatePopupMenu();
+        AppendMenuW( toolsMenu, MF_STRING, ID_TOOLS_DOWNLOAD_ARCHIVE, L"&Download Archive..." );
+        AppendMenuW( toolsMenu, MF_STRING, ID_TOOLS_DOWNLOAD_SETTINGS, L"Set Download &Working Folder..." );
+        AppendMenuW( toolsMenu, MF_SEPARATOR, 0, nullptr );
         AppendMenuW( toolsMenu, MF_STRING, ID_TOOLS_VERIFY_ARCHIVE, L"&Verify Current Archive..." );
         AppendMenuW( toolsMenu, MF_SEPARATOR, 0, nullptr );
         AppendMenuW( toolsMenu, MF_STRING, ID_TOOLS_PACK_ARCHIVE, L"&Pack Archive Folder..." );
@@ -1174,6 +1183,9 @@ private:
         case ID_FILE_OPEN_FOLDER:
             OpenPathDialog( true );
             return true;
+        case ID_FILE_DOWNLOAD_ARCHIVE:
+            DownloadArchiveFromDirectory();
+            return true;
         case ID_FILE_EXIT:
             SendMessageW( m_hwnd, WM_CLOSE, 0, 0 );
             return true;
@@ -1211,6 +1223,12 @@ private:
             return true;
         case ID_SEARCH_EXECUTE:
             ExecuteSearch();
+            return true;
+        case ID_TOOLS_DOWNLOAD_ARCHIVE:
+            DownloadArchiveFromDirectory();
+            return true;
+        case ID_TOOLS_DOWNLOAD_SETTINGS:
+            ConfigureDownloadWorkingFolder();
             return true;
         case ID_TOOLS_VERIFY_ARCHIVE:
             VerifyCurrentArchive();
@@ -1909,6 +1927,7 @@ private:
             m_hwnd,
             L"Ctrl+O  Open packaged archive file\n"
             L"Ctrl+Shift+O  Open archive folder or galaxy folder\n"
+            L"Ctrl+Shift+A  Download archive from usenet.nereid.pl\n"
             L"Ctrl+1 / Ctrl+2  Switch between Browse and Search tabs\n"
             L"Ctrl+F  Focus search box\n"
             L"F5  Run search\n"
@@ -2688,6 +2707,36 @@ private:
         LoadPath( WideToUtf8( path ) );
     }
 
+    void DownloadArchiveFromDirectory()
+    {
+        if( m_downloadWorkingFolder.empty() )
+        {
+            m_downloadWorkingFolder = winbrowser::LoadDownloadWorkingFolder();
+        }
+
+        std::wstring selectedWorkingFolder;
+        const auto archivePath = winbrowser::ShowArchiveDownloadDialog( m_hwnd, m_instance, m_font, m_downloadWorkingFolder, selectedWorkingFolder );
+        if( !selectedWorkingFolder.empty() && selectedWorkingFolder != m_downloadWorkingFolder )
+        {
+            m_downloadWorkingFolder = selectedWorkingFolder;
+            winbrowser::SaveDownloadWorkingFolder( m_downloadWorkingFolder );
+        }
+
+        if( archivePath.empty() ) return;
+        LoadPath( WideToUtf8( archivePath ) );
+    }
+
+    void ConfigureDownloadWorkingFolder()
+    {
+        auto folder = BrowseForPath( true, L"Select working folder for downloaded Usenet archives" );
+        if( folder.empty() ) return;
+
+        m_downloadWorkingFolder = folder;
+        winbrowser::SaveDownloadWorkingFolder( m_downloadWorkingFolder );
+        UpdateStatusText( L"Download working folder set to " + m_downloadWorkingFolder );
+        ShowInfo( L"Downloaded and unpacked archives will be stored in:\n" + m_downloadWorkingFolder, L"Download Working Folder" );
+    }
+
     std::wstring BrowseForPath( bool folder, const wchar_t* title = nullptr, const COMDLG_FILTERSPEC* filters = nullptr, UINT filterCount = 0 )
     {
         IFileDialog* dialog = nullptr;
@@ -3134,6 +3183,7 @@ private:
     std::string m_initialPath;
     std::string m_sourcePath;
     std::string m_activeArchivePath;
+    std::wstring m_downloadWorkingFolder;
     uint32_t m_selectedMessage = InvalidMessage;
     bool m_showFullHeaders = false;
     bool m_ignoreThreadSelection = false;
@@ -3145,7 +3195,7 @@ int WINAPI wWinMain( HINSTANCE instance, HINSTANCE, PWSTR, int showCmd )
 {
     INITCOMMONCONTROLSEX icc = {};
     icc.dwSize = sizeof( icc );
-    icc.dwICC = ICC_STANDARD_CLASSES | ICC_LISTVIEW_CLASSES | ICC_TREEVIEW_CLASSES | ICC_TAB_CLASSES | ICC_BAR_CLASSES;
+    icc.dwICC = ICC_STANDARD_CLASSES | ICC_LISTVIEW_CLASSES | ICC_TREEVIEW_CLASSES | ICC_TAB_CLASSES | ICC_BAR_CLASSES | ICC_PROGRESS_CLASS;
     InitCommonControlsEx( &icc );
 
     if( FAILED( CoInitializeEx( nullptr, COINIT_APARTMENTTHREADED | COINIT_DISABLE_OLE1DDE ) ) )
