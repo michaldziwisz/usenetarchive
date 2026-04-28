@@ -62,6 +62,7 @@ enum : UINT
     WM_ARCHIVE_LIST_READY = WM_APP + 50,
     WM_ARCHIVE_PROGRESS = WM_APP + 51,
     WM_ARCHIVE_DONE = WM_APP + 52,
+    WM_ARCHIVE_FOCUS_NEXT = WM_APP + 53,
 };
 
 enum class WorkStage
@@ -184,16 +185,12 @@ bool IsDirectory( const std::wstring& path )
     return attr != INVALID_FILE_ATTRIBUTES && ( attr & FILE_ATTRIBUTE_DIRECTORY ) != 0;
 }
 
-bool MoveFocusToNextDialogItem( HWND hwnd, bool previous )
+bool RequestDialogFocusMove( HWND hwnd, bool previous )
 {
     const auto root = GetAncestor( hwnd, GA_ROOT );
     if( !root ) return false;
 
-    const auto target = GetNextDlgTabItem( root, hwnd, previous ? TRUE : FALSE );
-    if( !target || target == hwnd ) return false;
-
-    SetFocus( target );
-    return true;
+    return SendMessageW( root, WM_ARCHIVE_FOCUS_NEXT, previous ? 1 : 0, 0 ) != 0;
 }
 
 uint64_t FileSize( const std::wstring& path )
@@ -755,7 +752,7 @@ LRESULT CALLBACK DialogEditSubclassProc( HWND hwnd, UINT msg, WPARAM wParam, LPA
         if( wParam == VK_TAB )
         {
             const auto previous = ( GetKeyState( VK_SHIFT ) & 0x8000 ) != 0;
-            if( MoveFocusToNextDialogItem( hwnd, previous ) ) return 0;
+            if( RequestDialogFocusMove( hwnd, previous ) ) return 0;
         }
         if( wParam == VK_ESCAPE )
         {
@@ -813,6 +810,8 @@ public:
         EnableWindow( m_owner, FALSE );
         ShowWindow( m_hwnd, SW_SHOW );
         UpdateWindow( m_hwnd );
+        SetActiveWindow( m_hwnd );
+        SetFocus( m_filterEdit );
         StartListRefresh();
 
         MSG msg = {};
@@ -898,6 +897,8 @@ private:
         case WM_ARCHIVE_DONE:
             OnDownloadDone( std::unique_ptr<WorkDone>( reinterpret_cast<WorkDone*>( lParam ) ) );
             return 0;
+        case WM_ARCHIVE_FOCUS_NEXT:
+            return MoveDialogFocus( wParam != 0 ) ? 1 : 0;
         case WM_CLOSE:
             if( m_busy )
             {
@@ -1048,6 +1049,10 @@ private:
 
     bool HandleDialogKey( UINT key )
     {
+        if( key == VK_TAB )
+        {
+            return MoveDialogFocus( ( GetKeyState( VK_SHIFT ) & 0x8000 ) != 0 );
+        }
         if( key == VK_F5 )
         {
             StartListRefresh();
@@ -1063,6 +1068,56 @@ private:
             FocusGroupList();
             return true;
         }
+        return false;
+    }
+
+    bool IsDialogFocusCandidate( HWND hwnd ) const
+    {
+        return hwnd && IsWindow( hwnd ) && IsWindowVisible( hwnd ) && IsWindowEnabled( hwnd );
+    }
+
+    bool MoveDialogFocus( bool previous )
+    {
+        const HWND order[] = {
+            m_filterEdit,
+            m_list,
+            m_folderText,
+            m_folderButton,
+            m_statusText,
+            m_refreshButton,
+            m_startButton,
+            m_cancelButton
+        };
+        constexpr int count = int( sizeof( order ) / sizeof( *order ) );
+
+        const auto current = GetFocus();
+        int currentIndex = previous ? count : -1;
+        for( int i=0; i<count; i++ )
+        {
+            if( order[i] == current )
+            {
+                currentIndex = i;
+                break;
+            }
+        }
+
+        for( int step=1; step<=count; step++ )
+        {
+            const int index = previous
+                ? ( currentIndex - step + count ) % count
+                : ( currentIndex + step ) % count;
+
+            if( IsDialogFocusCandidate( order[index] ) )
+            {
+                if( order[index] == m_list )
+                {
+                    EnsureGroupListSelection();
+                }
+                SetFocus( order[index] );
+                return true;
+            }
+        }
+
         return false;
     }
 
@@ -1121,11 +1176,16 @@ private:
 
     void FocusGroupList()
     {
+        EnsureGroupListSelection();
+        SetFocus( m_list );
+    }
+
+    void EnsureGroupListSelection()
+    {
         if( ListView_GetItemCount( m_list ) > 0 && SelectedRow() < 0 )
         {
             ListView_SetItemState( m_list, 0, LVIS_SELECTED | LVIS_FOCUSED, LVIS_SELECTED | LVIS_FOCUSED );
         }
-        SetFocus( m_list );
     }
 
     bool HandleCommand( int id, int code, HWND control )
@@ -1241,8 +1301,10 @@ private:
     void UpdateButtons()
     {
         const auto canStart = !m_busy && SelectedRow() >= 0 && !m_filtered.empty();
-        EnableWindow( m_filterEdit, !m_busy );
-        EnableWindow( m_list, !m_busy );
+        EnableWindow( m_filterEdit, TRUE );
+        EnableWindow( m_list, TRUE );
+        EnableWindow( m_folderText, TRUE );
+        EnableWindow( m_statusText, TRUE );
         EnableWindow( m_folderButton, !m_busy );
         EnableWindow( m_refreshButton, !m_busy );
         EnableWindow( m_startButton, canStart );
@@ -1308,6 +1370,10 @@ private:
         m_entries = std::move( result->entries );
         RebuildList();
         SetStatus( L"Loaded " + std::to_wstring( m_entries.size() ) + L" downloadable archive groups.", true );
+        if( !m_filtered.empty() )
+        {
+            FocusGroupList();
+        }
     }
 
     void RebuildList()
