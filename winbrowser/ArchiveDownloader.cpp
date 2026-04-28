@@ -46,6 +46,7 @@ enum : int
     IDC_DOWNLOAD_FOLDER_LABEL,
     IDC_DOWNLOAD_FOLDER_TEXT,
     IDC_DOWNLOAD_FOLDER_BUTTON,
+    IDC_DOWNLOAD_STATUS_LABEL,
     IDC_DOWNLOAD_STATUS,
     IDC_DOWNLOAD_PROGRESS_LABEL,
     IDC_DOWNLOAD_PROGRESS,
@@ -181,6 +182,18 @@ bool IsDirectory( const std::wstring& path )
 {
     const auto attr = GetFileAttributesW( path.c_str() );
     return attr != INVALID_FILE_ATTRIBUTES && ( attr & FILE_ATTRIBUTE_DIRECTORY ) != 0;
+}
+
+bool MoveFocusToNextDialogItem( HWND hwnd, bool previous )
+{
+    const auto root = GetAncestor( hwnd, GA_ROOT );
+    if( !root ) return false;
+
+    const auto target = GetNextDlgTabItem( root, hwnd, previous ? TRUE : FALSE );
+    if( !target || target == hwnd ) return false;
+
+    SetFocus( target );
+    return true;
 }
 
 uint64_t FileSize( const std::wstring& path )
@@ -729,6 +742,37 @@ void AddColumn( HWND list, int index, const wchar_t* title, int width )
     ListView_InsertColumn( list, index, &column );
 }
 
+LRESULT CALLBACK DialogEditSubclassProc( HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam, UINT_PTR, DWORD_PTR )
+{
+    switch( msg )
+    {
+    case WM_GETDLGCODE:
+        if( wParam == VK_TAB ) return 0;
+        if( wParam == VK_ESCAPE ) return DefSubclassProc( hwnd, msg, wParam, lParam ) | DLGC_WANTMESSAGE;
+        return DefSubclassProc( hwnd, msg, wParam, lParam ) & ~DLGC_WANTTAB;
+    case WM_KEYDOWN:
+    case WM_CHAR:
+        if( wParam == VK_TAB )
+        {
+            const auto previous = ( GetKeyState( VK_SHIFT ) & 0x8000 ) != 0;
+            if( MoveFocusToNextDialogItem( hwnd, previous ) ) return 0;
+        }
+        if( wParam == VK_ESCAPE )
+        {
+            if( const auto root = GetAncestor( hwnd, GA_ROOT ) )
+            {
+                SendMessageW( root, WM_COMMAND, MAKEWPARAM( IDCANCEL, 0 ), 0 );
+                return 0;
+            }
+        }
+        break;
+    default:
+        break;
+    }
+
+    return DefSubclassProc( hwnd, msg, wParam, lParam );
+}
+
 class ArchiveDownloadDialog
 {
 public:
@@ -774,6 +818,10 @@ public:
         MSG msg = {};
         while( m_running && GetMessageW( &msg, nullptr, 0, 0 ) > 0 )
         {
+            if( HandleKeyboardMessage( msg ) )
+            {
+                continue;
+            }
             if( !IsDialogMessageW( m_hwnd, &msg ) )
             {
                 TranslateMessage( &msg );
@@ -835,6 +883,12 @@ private:
         case WM_NOTIFY:
             if( HandleNotify( reinterpret_cast<NMHDR*>( lParam ) ) ) return 0;
             break;
+        case WM_SYSCHAR:
+            if( HandleMnemonic( wchar_t( wParam ) ) ) return 0;
+            break;
+        case WM_KEYDOWN:
+            if( HandleDialogKey( UINT( wParam ) ) ) return 0;
+            break;
         case WM_ARCHIVE_LIST_READY:
             OnListReady( std::unique_ptr<ListResult>( reinterpret_cast<ListResult*>( lParam ) ) );
             return 0;
@@ -848,7 +902,7 @@ private:
             if( m_busy )
             {
                 m_cancel.store( true );
-                SetStatus( L"Cancelling..." );
+                SetStatus( L"Cancelling...", true );
                 return 0;
             }
             DestroyWindow( m_hwnd );
@@ -865,12 +919,13 @@ private:
 
     bool CreateControls()
     {
-        m_filterLabel = CreateWindowExW( 0, L"STATIC", L"Filter groups:", WS_CHILD | WS_VISIBLE, 0, 0, 100, 22, m_hwnd, nullptr, m_instance, nullptr );
+        m_filterLabel = CreateWindowExW( 0, L"STATIC", L"&Filter groups:", WS_CHILD | WS_VISIBLE, 0, 0, 100, 22, m_hwnd, nullptr, m_instance, nullptr );
         m_filterEdit = CreateWindowExW( WS_EX_CLIENTEDGE, L"EDIT", L"", WS_CHILD | WS_VISIBLE | WS_TABSTOP | ES_AUTOHSCROLL, 0, 0, 100, 24, m_hwnd, reinterpret_cast<HMENU>( IDC_DOWNLOAD_FILTER ), m_instance, nullptr );
+        SendMessageW( m_filterEdit, EM_SETCUEBANNER, TRUE, LPARAM( L"Filter groups" ) );
         m_list = CreateWindowExW(
             WS_EX_CLIENTEDGE,
             WC_LISTVIEWW,
-            L"Archive groups",
+            L"Archive group list",
             WS_CHILD | WS_VISIBLE | WS_TABSTOP | LVS_REPORT | LVS_SHOWSELALWAYS | LVS_SINGLESEL,
             0,
             0,
@@ -881,21 +936,23 @@ private:
             m_instance,
             nullptr
         );
-        m_folderLabel = CreateWindowExW( 0, L"STATIC", L"Working folder:", WS_CHILD | WS_VISIBLE, 0, 0, 100, 22, m_hwnd, nullptr, m_instance, nullptr );
+        m_groupListLabel = CreateWindowExW( 0, L"STATIC", L"&Group list:", WS_CHILD | WS_VISIBLE, 0, 0, 100, 22, m_hwnd, nullptr, m_instance, nullptr );
+        m_folderLabel = CreateWindowExW( 0, L"STATIC", L"&Working folder:", WS_CHILD | WS_VISIBLE, 0, 0, 100, 22, m_hwnd, nullptr, m_instance, nullptr );
         m_folderText = CreateWindowExW( WS_EX_CLIENTEDGE, L"EDIT", m_workingFolder.c_str(), WS_CHILD | WS_VISIBLE | WS_TABSTOP | ES_AUTOHSCROLL, 0, 0, 100, 24, m_hwnd, reinterpret_cast<HMENU>( IDC_DOWNLOAD_FOLDER_TEXT ), m_instance, nullptr );
         SendMessageW( m_folderText, EM_SETREADONLY, TRUE, 0 );
-        m_folderButton = CreateWindowExW( 0, L"BUTTON", L"Change...", WS_CHILD | WS_VISIBLE | WS_TABSTOP, 0, 0, 100, 28, m_hwnd, reinterpret_cast<HMENU>( IDC_DOWNLOAD_FOLDER_BUTTON ), m_instance, nullptr );
-        m_statusText = CreateWindowExW( 0, L"STATIC", L"Loading archive list...", WS_CHILD | WS_VISIBLE, 0, 0, 100, 40, m_hwnd, reinterpret_cast<HMENU>( IDC_DOWNLOAD_STATUS ), m_instance, nullptr );
+        m_folderButton = CreateWindowExW( 0, L"BUTTON", L"C&hange...", WS_CHILD | WS_VISIBLE | WS_TABSTOP, 0, 0, 100, 28, m_hwnd, reinterpret_cast<HMENU>( IDC_DOWNLOAD_FOLDER_BUTTON ), m_instance, nullptr );
+        m_statusLabel = CreateWindowExW( 0, L"STATIC", L"&Status:", WS_CHILD | WS_VISIBLE, 0, 0, 100, 20, m_hwnd, reinterpret_cast<HMENU>( IDC_DOWNLOAD_STATUS_LABEL ), m_instance, nullptr );
+        m_statusText = CreateWindowExW( WS_EX_CLIENTEDGE, L"EDIT", L"Loading archive list...", WS_CHILD | WS_VISIBLE | WS_TABSTOP | ES_MULTILINE | ES_AUTOVSCROLL | ES_READONLY, 0, 0, 100, 40, m_hwnd, reinterpret_cast<HMENU>( IDC_DOWNLOAD_STATUS ), m_instance, nullptr );
         m_downloadProgressLabel = CreateWindowExW( 0, L"STATIC", L"Download progress", WS_CHILD | WS_VISIBLE, 0, 0, 100, 20, m_hwnd, reinterpret_cast<HMENU>( IDC_DOWNLOAD_PROGRESS_LABEL ), m_instance, nullptr );
         m_downloadProgress = CreateWindowExW( 0, PROGRESS_CLASSW, L"", WS_CHILD | WS_VISIBLE, 0, 0, 100, 22, m_hwnd, reinterpret_cast<HMENU>( IDC_DOWNLOAD_PROGRESS ), m_instance, nullptr );
         m_extractProgressLabel = CreateWindowExW( 0, L"STATIC", L"Unpack progress", WS_CHILD | WS_VISIBLE, 0, 0, 100, 20, m_hwnd, reinterpret_cast<HMENU>( IDC_EXTRACT_PROGRESS_LABEL ), m_instance, nullptr );
         m_extractProgress = CreateWindowExW( 0, PROGRESS_CLASSW, L"", WS_CHILD | WS_VISIBLE, 0, 0, 100, 22, m_hwnd, reinterpret_cast<HMENU>( IDC_EXTRACT_PROGRESS ), m_instance, nullptr );
-        m_refreshButton = CreateWindowExW( 0, L"BUTTON", L"Refresh List", WS_CHILD | WS_VISIBLE | WS_TABSTOP, 0, 0, 110, 30, m_hwnd, reinterpret_cast<HMENU>( IDC_DOWNLOAD_REFRESH ), m_instance, nullptr );
-        m_startButton = CreateWindowExW( 0, L"BUTTON", L"Download and Open", WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_DEFPUSHBUTTON, 0, 0, 150, 30, m_hwnd, reinterpret_cast<HMENU>( IDC_DOWNLOAD_START ), m_instance, nullptr );
-        m_cancelButton = CreateWindowExW( 0, L"BUTTON", L"Close", WS_CHILD | WS_VISIBLE | WS_TABSTOP, 0, 0, 90, 30, m_hwnd, reinterpret_cast<HMENU>( IDC_DOWNLOAD_CANCEL ), m_instance, nullptr );
+        m_refreshButton = CreateWindowExW( 0, L"BUTTON", L"&Refresh List", WS_CHILD | WS_VISIBLE | WS_TABSTOP, 0, 0, 110, 30, m_hwnd, reinterpret_cast<HMENU>( IDC_DOWNLOAD_REFRESH ), m_instance, nullptr );
+        m_startButton = CreateWindowExW( 0, L"BUTTON", L"&Download and Open", WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_DEFPUSHBUTTON, 0, 0, 150, 30, m_hwnd, reinterpret_cast<HMENU>( IDC_DOWNLOAD_START ), m_instance, nullptr );
+        m_cancelButton = CreateWindowExW( 0, L"BUTTON", L"&Close", WS_CHILD | WS_VISIBLE | WS_TABSTOP, 0, 0, 90, 30, m_hwnd, reinterpret_cast<HMENU>( IDC_DOWNLOAD_CANCEL ), m_instance, nullptr );
 
         const HWND controls[] = {
-            m_filterLabel, m_filterEdit, m_list, m_folderLabel, m_folderText, m_folderButton, m_statusText,
+            m_filterLabel, m_filterEdit, m_groupListLabel, m_list, m_folderLabel, m_folderText, m_folderButton, m_statusLabel, m_statusText,
             m_downloadProgressLabel, m_downloadProgress, m_extractProgressLabel, m_extractProgress, m_refreshButton, m_startButton, m_cancelButton
         };
         for( auto control : controls )
@@ -912,6 +969,9 @@ private:
 
         SendMessageW( m_downloadProgress, PBM_SETRANGE, 0, MAKELPARAM( 0, 100 ) );
         SendMessageW( m_extractProgress, PBM_SETRANGE, 0, MAKELPARAM( 0, 100 ) );
+        SetWindowSubclass( m_filterEdit, &DialogEditSubclassProc, 0, 0 );
+        SetWindowSubclass( m_folderText, &DialogEditSubclassProc, 0, 0 );
+        SetWindowSubclass( m_statusText, &DialogEditSubclassProc, 0, 0 );
 
         SetFocus( m_filterEdit );
         Layout();
@@ -946,8 +1006,11 @@ private:
         SetWindowPos( m_filterLabel, nullptr, gap, gap + Scale( 3 ), filterLabelWidth, labelHeight, SWP_NOZORDER );
         SetWindowPos( m_filterEdit, nullptr, gap + filterLabelWidth + gap, gap, std::max( 100, width - filterLabelWidth - gap * 3 ), inputHeight, SWP_NOZORDER );
 
-        const int bottomArea = Scale( 204 );
-        const int listTop = gap + inputHeight + gap;
+        const int bottomArea = Scale( 224 );
+        const int groupLabelTop = gap + inputHeight + gap;
+        SetWindowPos( m_groupListLabel, nullptr, gap, groupLabelTop, std::max( 0, width - gap * 2 ), labelHeight, SWP_NOZORDER );
+
+        const int listTop = groupLabelTop + labelHeight;
         const int listHeight = std::max( Scale( 150 ), height - listTop - bottomArea - gap );
         SetWindowPos( m_list, nullptr, gap, listTop, std::max( 0, width - gap * 2 ), listHeight, SWP_NOZORDER );
 
@@ -959,6 +1022,9 @@ private:
         SetWindowPos( m_folderButton, nullptr, width - folderButtonWidth - gap, y - Scale( 1 ), folderButtonWidth, buttonHeight, SWP_NOZORDER );
 
         y += inputHeight + gap;
+        SetWindowPos( m_statusLabel, nullptr, gap, y, std::max( 0, width - gap * 2 ), labelHeight, SWP_NOZORDER );
+
+        y += labelHeight;
         SetWindowPos( m_statusText, nullptr, gap, y, std::max( 0, width - gap * 2 ), Scale( 38 ), SWP_NOZORDER );
 
         y += Scale( 42 );
@@ -978,6 +1044,88 @@ private:
         SetWindowPos( m_cancelButton, nullptr, width - cancelWidth - gap, y, cancelWidth, buttonHeight, SWP_NOZORDER );
         SetWindowPos( m_startButton, nullptr, width - cancelWidth - startWidth - gap * 2, y, startWidth, buttonHeight, SWP_NOZORDER );
         SetWindowPos( m_refreshButton, nullptr, width - cancelWidth - startWidth - refreshWidth - gap * 3, y, refreshWidth, buttonHeight, SWP_NOZORDER );
+    }
+
+    bool HandleDialogKey( UINT key )
+    {
+        if( key == VK_F5 )
+        {
+            StartListRefresh();
+            return true;
+        }
+        if( key == VK_ESCAPE )
+        {
+            SendMessageW( m_hwnd, WM_COMMAND, MAKEWPARAM( IDCANCEL, 0 ), 0 );
+            return true;
+        }
+        if( GetFocus() == m_filterEdit && key == VK_DOWN )
+        {
+            FocusGroupList();
+            return true;
+        }
+        return false;
+    }
+
+    bool HandleKeyboardMessage( const MSG& msg )
+    {
+        if( msg.hwnd != m_hwnd && !IsChild( m_hwnd, msg.hwnd ) ) return false;
+
+        switch( msg.message )
+        {
+        case WM_SYSCHAR:
+            return HandleMnemonic( wchar_t( msg.wParam ) );
+        case WM_KEYDOWN:
+            return HandleDialogKey( UINT( msg.wParam ) );
+        default:
+            break;
+        }
+
+        return false;
+    }
+
+    bool HandleMnemonic( wchar_t key )
+    {
+        if( ( GetKeyState( VK_CONTROL ) & 0x8000 ) != 0 ) return false;
+
+        switch( towlower( key ) )
+        {
+        case L'f':
+            SetFocus( m_filterEdit );
+            return true;
+        case L'g':
+            FocusGroupList();
+            return true;
+        case L'w':
+            SetFocus( m_folderText );
+            return true;
+        case L'h':
+            ChangeWorkingFolder();
+            return true;
+        case L's':
+            SetFocus( m_statusText );
+            return true;
+        case L'r':
+            StartListRefresh();
+            return true;
+        case L'd':
+            StartSelectedDownload();
+            return true;
+        case L'c':
+            SendMessageW( m_hwnd, WM_COMMAND, MAKEWPARAM( IDCANCEL, 0 ), 0 );
+            return true;
+        default:
+            break;
+        }
+        return false;
+    }
+
+    void FocusGroupList()
+    {
+        if( ListView_GetItemCount( m_list ) > 0 && SelectedRow() < 0 )
+        {
+            ListView_SetItemState( m_list, 0, LVIS_SELECTED | LVIS_FOCUSED, LVIS_SELECTED | LVIS_FOCUSED );
+        }
+        SetFocus( m_list );
     }
 
     bool HandleCommand( int id, int code, HWND control )
@@ -1005,7 +1153,7 @@ private:
             if( m_busy )
             {
                 m_cancel.store( true );
-                SetStatus( L"Cancelling..." );
+                SetStatus( L"Cancelling...", true );
             }
             else
             {
@@ -1042,10 +1190,52 @@ private:
         return ListView_GetNextItem( m_list, -1, LVNI_SELECTED );
     }
 
-    void SetStatus( const std::wstring& text )
+    void SetStatus( const std::wstring& text, bool announce = false )
     {
         SetWindowTextW( m_statusText, text.c_str() );
-        NotifyWinEvent( EVENT_OBJECT_NAMECHANGE, m_statusText, OBJID_CLIENT, CHILDID_SELF );
+        SendMessageW( m_statusText, EM_SETSEL, 0, 0 );
+        NotifyWinEvent( EVENT_OBJECT_VALUECHANGE, m_statusText, OBJID_CLIENT, CHILDID_SELF );
+        if( announce )
+        {
+            NotifyWinEvent( EVENT_SYSTEM_ALERT, m_statusText, OBJID_CLIENT, CHILDID_SELF );
+        }
+    }
+
+    void SetProgressLabel( HWND label, const wchar_t* name, int percent )
+    {
+        const auto text = std::wstring( name ) + L": " + std::to_wstring( percent ) + L"%";
+        SetWindowTextW( label, text.c_str() );
+    }
+
+    bool DidProgressPercentChange( WorkStage stage, int percent )
+    {
+        auto& lastPercent = stage == WorkStage::Download ? m_lastDownloadDisplayedPercent : m_lastExtractDisplayedPercent;
+        if( lastPercent == percent ) return false;
+        lastPercent = percent;
+        return true;
+    }
+
+    bool ShouldAnnounceProgress( WorkStage stage, int percent )
+    {
+        auto& lastPercent = stage == WorkStage::Download ? m_lastDownloadAnnouncedPercent : m_lastExtractAnnouncedPercent;
+        if( percent >= 100 )
+        {
+            if( lastPercent < 100 )
+            {
+                lastPercent = 100;
+                return true;
+            }
+            return false;
+        }
+
+        const int bucket = percent <= 0 ? 0 : ( percent / 10 ) * 10;
+        if( lastPercent < 0 || bucket >= lastPercent + 10 )
+        {
+            lastPercent = bucket;
+            return true;
+        }
+
+        return false;
     }
 
     void UpdateButtons()
@@ -1056,7 +1246,7 @@ private:
         EnableWindow( m_folderButton, !m_busy );
         EnableWindow( m_refreshButton, !m_busy );
         EnableWindow( m_startButton, canStart );
-        SetWindowTextW( m_cancelButton, m_busy ? L"Cancel" : L"Close" );
+        SetWindowTextW( m_cancelButton, m_busy ? L"&Cancel" : L"&Close" );
     }
 
     void SetBusy( bool busy )
@@ -1080,10 +1270,12 @@ private:
         JoinWorker();
         m_cancel.store( false );
         SetBusy( true );
-        SetStatus( L"Loading archive list from https://usenet.nereid.pl/ ..." );
+        SetStatus( L"Loading archive list from https://usenet.nereid.pl/ ...", true );
         ListView_DeleteAllItems( m_list );
         SendMessageW( m_downloadProgress, PBM_SETPOS, 0, 0 );
         SendMessageW( m_extractProgress, PBM_SETPOS, 0, 0 );
+        SetProgressLabel( m_downloadProgressLabel, L"Download progress", 0 );
+        SetProgressLabel( m_extractProgressLabel, L"Unpack progress", 0 );
 
         const auto hwnd = m_hwnd;
         m_worker = std::thread( [hwnd, this]() {
@@ -1108,14 +1300,14 @@ private:
 
         if( !result->error.empty() )
         {
-            SetStatus( result->error );
+            SetStatus( result->error, true );
             MessageBoxW( m_hwnd, result->error.c_str(), L"Archive List", MB_OK | MB_ICONERROR );
             return;
         }
 
         m_entries = std::move( result->entries );
         RebuildList();
-        SetStatus( L"Loaded " + std::to_wstring( m_entries.size() ) + L" downloadable archive groups." );
+        SetStatus( L"Loaded " + std::to_wstring( m_entries.size() ) + L" downloadable archive groups.", true );
     }
 
     void RebuildList()
@@ -1228,7 +1420,13 @@ private:
         SetBusy( true );
         SendMessageW( m_downloadProgress, PBM_SETPOS, 0, 0 );
         SendMessageW( m_extractProgress, PBM_SETPOS, 0, 0 );
-        SetStatus( L"Downloading " + entry.group + L"..." );
+        SetProgressLabel( m_downloadProgressLabel, L"Download progress", 0 );
+        SetProgressLabel( m_extractProgressLabel, L"Unpack progress", 0 );
+        m_lastDownloadDisplayedPercent = -1;
+        m_lastExtractDisplayedPercent = -1;
+        m_lastDownloadAnnouncedPercent = -1;
+        m_lastExtractAnnouncedPercent = -1;
+        SetStatus( L"Downloading " + entry.group + L"...", true );
 
         const auto hwnd = m_hwnd;
         m_worker = std::thread( [hwnd, this, entry, tempPath, outputPath]() {
@@ -1249,7 +1447,8 @@ private:
                 tempPath,
                 m_cancel,
                 [&]( uint64_t current, uint64_t total ) {
-                    postProgress( WorkStage::Download, current, total, L"Downloading " + entry.group + L": " + FormatBytes( current ) + L" of " + ( total ? FormatBytes( total ) : entry.sizeText ) );
+                    const auto effectiveTotal = total ? total : entry.bytes;
+                    postProgress( WorkStage::Download, current, effectiveTotal, L"Downloading " + entry.group + L": " + FormatBytes( current ) + L" of " + ( effectiveTotal ? FormatBytes( effectiveTotal ) : entry.sizeText ) );
                 },
                 error
             );
@@ -1293,15 +1492,36 @@ private:
 
     void OnProgress( std::unique_ptr<WorkProgress> progress )
     {
+        int percent = 0;
         if( progress->stage == WorkStage::Download )
         {
-            SendMessageW( m_downloadProgress, PBM_SETPOS, ProgressPercent( progress->current, progress->total ), 0 );
+            percent = ProgressPercent( progress->current, progress->total );
         }
         else
         {
-            SendMessageW( m_extractProgress, PBM_SETPOS, ProgressPercent( progress->current, progress->total ), 0 );
+            percent = ProgressPercent( progress->current, progress->total );
         }
-        SetStatus( progress->text );
+
+        const auto percentChanged = DidProgressPercentChange( progress->stage, percent );
+        if( percentChanged )
+        {
+            if( progress->stage == WorkStage::Download )
+            {
+                SendMessageW( m_downloadProgress, PBM_SETPOS, percent, 0 );
+                SetProgressLabel( m_downloadProgressLabel, L"Download progress", percent );
+            }
+            else
+            {
+                SendMessageW( m_extractProgress, PBM_SETPOS, percent, 0 );
+                SetProgressLabel( m_extractProgressLabel, L"Unpack progress", percent );
+            }
+        }
+
+        const auto shouldAnnounce = ShouldAnnounceProgress( progress->stage, percent );
+        if( percentChanged || shouldAnnounce )
+        {
+            SetStatus( progress->text, shouldAnnounce );
+        }
     }
 
     void OnDownloadDone( std::unique_ptr<WorkDone> done )
@@ -1313,6 +1533,8 @@ private:
         {
             SendMessageW( m_downloadProgress, PBM_SETPOS, 100, 0 );
             SendMessageW( m_extractProgress, PBM_SETPOS, 100, 0 );
+            SetProgressLabel( m_downloadProgressLabel, L"Download progress", 100 );
+            SetProgressLabel( m_extractProgressLabel, L"Unpack progress", 100 );
             m_resultArchivePath = done->archivePath;
             DestroyWindow( m_hwnd );
             return;
@@ -1320,7 +1542,9 @@ private:
 
         SendMessageW( m_downloadProgress, PBM_SETPOS, 0, 0 );
         SendMessageW( m_extractProgress, PBM_SETPOS, 0, 0 );
-        SetStatus( done->cancelled ? L"Operation cancelled." : done->error );
+        SetProgressLabel( m_downloadProgressLabel, L"Download progress", 0 );
+        SetProgressLabel( m_extractProgressLabel, L"Unpack progress", 0 );
+        SetStatus( done->cancelled ? L"Operation cancelled." : done->error, true );
         if( !done->cancelled )
         {
             MessageBoxW( m_hwnd, done->error.c_str(), L"Download Archive", MB_OK | MB_ICONERROR );
@@ -1333,10 +1557,12 @@ private:
     HWND m_hwnd = nullptr;
     HWND m_filterLabel = nullptr;
     HWND m_filterEdit = nullptr;
+    HWND m_groupListLabel = nullptr;
     HWND m_list = nullptr;
     HWND m_folderLabel = nullptr;
     HWND m_folderText = nullptr;
     HWND m_folderButton = nullptr;
+    HWND m_statusLabel = nullptr;
     HWND m_statusText = nullptr;
     HWND m_downloadProgressLabel = nullptr;
     HWND m_downloadProgress = nullptr;
@@ -1352,6 +1578,10 @@ private:
     std::atomic_bool m_cancel { false };
     bool m_busy = false;
     bool m_running = true;
+    int m_lastDownloadDisplayedPercent = -1;
+    int m_lastExtractDisplayedPercent = -1;
+    int m_lastDownloadAnnouncedPercent = -1;
+    int m_lastExtractAnnouncedPercent = -1;
 
     std::wstring m_workingFolder;
     std::wstring m_resultArchivePath;
